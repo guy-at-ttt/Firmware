@@ -1,3 +1,28 @@
+# Readme - Yona
+
+Check Develop (or any of the feature branches).
+
+This repo contains the source code and dependencies for Yona.
+
+
+Before cloning this repo, follow the installation instructions:
+
+For Windows,
+
+  * Download and install the latest version of the ready to use MSI installer: ``` https://s3-us-west-2.amazonaws.com/px4-tools/PX4+Windows+Cygwin+Toolchain/PX4+Windows+Cygwin+Toolchain+0.3.msi ```
+  * DO NOT check the box and the end of the installation to clone the PX4 repo (unless you need the actual repo).
+  * Browse to the toolchain installation directory (default - ```C:\PX4\``` )
+  * Run ```run-console.bat``` to start Cygwin bash console.
+  * Clone this repo (also loads the submodules)
+  ```
+  git clone --recursive -j8 <http link to the repo>
+  ```
+
+
+
+____________________________________________________________________________________
+
+
 # PX4 Drone Autopilot
 
 [![Releases](https://img.shields.io/github/release/PX4/Firmware.svg)](https://github.com/PX4/Firmware/releases) [![DOI](https://zenodo.org/badge/22634/PX4/Firmware.svg)](https://zenodo.org/badge/latestdoi/22634/PX4/Firmware)
