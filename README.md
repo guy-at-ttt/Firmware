@@ -1,7 +1,5 @@
 # Readme - Yona
 
-Check Develop (or any of the feature branches).
-
 This repo contains the source code and dependencies for Yona.
 
 
