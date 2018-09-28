@@ -2,6 +2,20 @@
  * @file yona_coaxial_heli.cpp
  * Yona app thrust and yaw
  * 
+ * Motor - mRo Connections :
+ *      PWM MAIN 1: Swashplate servomotor, PITCH axis
+ *      PWM MAIN 2: Swashplate servomotor, ROLL axis
+ *      PWN MAIN 3: Upper rotor (CCW)
+ *      PWM MAIN 4: Lower rotor (CW)
+ * 
+ * RC Channel mapping :
+ *      CH 0: ROLL
+ *      CH 1: PITCH
+ *      CH 2: YAW
+ *      CH 3: THRUST
+ *      CH ?: Mode Switch
+ *      CH ?: Return Switch
+ * 
  * @author TreetownTech User <tttuser@example.com>
  */
 
@@ -56,25 +70,40 @@ int parameters_init(struct param_handles *handle) {
 }
 
 int parameters_update(const struct param_handles *handle, struct params *parameters) {
+    // Copy values from parameters to the handles
     param_get(handle->roll_p, &(parameters->roll_p));
     param_get(handle->pitch_p, &(parameters->pitch_p));
     param_get(handle->yaw_p, &(parameters->yaw_p));
     param_get(handle->thrust_p, &(parameters->thrust_p));
 }
 
-int control_right_stick() {
+int control_right_stick(struct actuator_controls_s *actuators) {
     // Control Roll and Pitch
+    // Update PI gains
+
+    // Setting ROLL and PITCH to 0
+    actuators->control[0] = 0.0f;
+    actuators->control[1] = 0.0f;
 }
 
-int control_thrust() {
+int control_thrust(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators) {
     // Control thrust
-    // Read channel 1
+    // TODO: Add a controller to update PI gains on yaw and thrust
+
+    // control_right_stick(actuators);
+    // Setting ROLL and PITCH to 0
+    actuators->control[0] = 0.0f;               // ROLL
+    actuators->control[1] = 0.0f;               // PITCH
+
+    actuators->control[2] = att_sp->yaw;        // YAW
+    actuators->control[3] = att_sp->thrust;     // THRUST
 }
 
-int control_roll() {
-    // Combine in thrust.?
-    // Read channel 2
-}
+// int control_roll() {
+//     // Combine in control_thrust().?
+//     // Read channel 1
+//     // Update PI gains
+// }
 
 static void console_print(const char *reason) {
     if (reason)
@@ -144,6 +173,16 @@ int yona_coaxial_heli_main_thread() {
         }
         else {
             // Main Control Thread Logic
+            // Failsafes, Sanity checks, Read RC inputs, Backup Values, Update att and att_sp, Publish actuator values
+
+            // Check if parameters have changed
+            if (fds[0].revents & POLLIN) {
+                struct parameter_update_s value_updates;
+                orb_copy(ORB_ID(parameter_update_s), param_sub, &value_updates);
+
+                // Reading the updated values
+                parameters_update(&ph, &pp);
+            }
         }
     }
 }
@@ -200,10 +239,6 @@ int yona_coaxial_heli_main(int argc, char *argv[]) {
 // Thread
     // Control roll & pitch -> automatically - read inputs and try to correct angles - controller
     // Control thrust & yaw from radio - callibrate radio - assign channels - map channels to mRo - try using QGC
-    // RC Ch 1 - Roll
-    // RC Ch 2 - Pitch
-    // RC Ch 3 - Yaw
-    // RC Ch 4 - Thrust
 // Run the thread in main()
 
 // Add function in init.d file on mRo
