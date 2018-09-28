@@ -85,13 +85,6 @@ static void console_print(const char *reason) {
 
 int yona_coaxial_heli_main_thread() {
     // Main thread
-
-    // while()
-}
-
-int yona_coaxial_heli_main(int argc, char *argv[]) {
-    PX4_INFO("__ YONA __");
-
     /* ------ Initializing the Input parameters ------ */
     parameters_init(&ph);
     parameters_update(&ph, &pp);
@@ -117,48 +110,89 @@ int yona_coaxial_heli_main(int argc, char *argv[]) {
         actuators.control[i] = 0.0f;
     }
 
-    // // Checking for arguments in the command {start|status|stop}        // TODO: Keep this.?
-    // if (argc < 2) {
-    //     console_print("missing command");
-    //     return 1;
-    // }
+    /* ------ Advertise these controllers (actuator_pub and rates_pub) as publishers of
+              these topics (actuator_controls and rates_sp)                     ------ */
+    orb_advert_t actuator_pub = orb_advertise(ORB_ID_VEHICLE_ATTITUDE_CONTROLS, &actuators);
+    orb_advert_t rates_pub = orb_advertise(ORB_ID(vehicle_rates_setpoint), &rates_sp);
 
-    // // Command: yona_coaxial_heli start
-    // if (!strcmp(argv[1], "start")) {
-    //     if (thread_running) {
-    //         warnx("running");
-    //         return 0;
-    //     }
+    /* ------ Subscribe to rest of the topics ------ */
+    int att_sub = orb_subscribe(ORB_ID(vehicle_attitude));
+    int manual_sp_sub = orb_subscribe(ORB_ID(manual_control_setpoint));
+    int v_status_sub = orb_subscribe(ORB_ID(vehicle_status));
+    int param_sub = orb_subscribe(ORB_ID(parameter_update));
 
-    //     thread_should_exit = false;
-    //     // px4_task_spawn_cmd - name, (int) scheduler, (int) priority, (int) stack_size, (px4_main_t) entry, argv[]
-    //     deamon_task = px4_task_spawn_cmd("yona_coaxial_heli",
-    //                                     SCHED_DEFAULT,
-    //                                     SCHED_PRIORITY_MAX - 20,
-    //                                     2048,
-    //                                     yona_coaxial_heli_main_thread,
-    //                                     (argv) ? (char *const *)&argv[2] : (char *const *)nullptr);
-    //     thread_running = true;
-    //     return 0;
-    // }
+
+    struct pollfd fds[2] = {};
+    fds[0].fd = param_sub;          // Descriptor being polled
+    fds[0].events = POLLIN;         // Data other than high-priority data may be read without blocking
+    fds[1].fd = att_sub;
+    fds[1].events = POLLIN;
+
+    while (!thread_should_exit) {
+        // Parameters : list of file descriptors (structures);
+        //              number of list items (descriptors);
+        //              timeout (in ms)
+        // Returns : number of structures that have non-zero revents fields.
+        //           0; if times out waiting for a "descriptor ready"
+        int poll_ret_val = poll(fds, 2, 500);
+
+        if (ret < 0) {
+            warnx("Poll Error");
+        }
+        else if (ret == 0) {
+            continue;
+        }
+        else {
+            // Main Control Thread Logic
+        }
+    }
+}
+
+int yona_coaxial_heli_main(int argc, char *argv[]) {
+    PX4_INFO("__ YONA __");
+
+    // Checking for arguments in the command {start|status|stop}        // TODO: Keep this.?
+    if (argc < 2) {
+        console_print("missing command");
+        return 1;
+    }
+
+    // Command: yona_coaxial_heli start
+    if (!strcmp(argv[1], "start")) {
+        if (thread_running) {
+            warnx("running");
+            return 0;
+        }
+
+        thread_should_exit = false;
+        // px4_task_spawn_cmd - name, (int) scheduler, (int) priority, (int) stack_size, (px4_main_t) entry, argv[]
+        deamon_task = px4_task_spawn_cmd("yona_coaxial_heli",
+                                        SCHED_DEFAULT,
+                                        SCHED_PRIORITY_MAX - 20,
+                                        2048,
+                                        yona_coaxial_heli_main_thread,
+                                        (argv) ? (char *const *)&argv[2] : (char *const *)nullptr);
+        thread_running = true;
+        return 0;
+    }
     
-    // // Command: yona_coaxial_heli stop
-    // if (!strcmp(argv[1], "stop")) {
-    //     thread_should_exit = true;
-    //     return 0;
-    // }
+    // Command: yona_coaxial_heli stop
+    if (!strcmp(argv[1], "stop")) {
+        thread_should_exit = true;
+        return 0;
+    }
 
-    // // Command: yona_coaxial_heli status
-    // if (!strcmp(argv[1], "status")) {
-    //     if (thread_running)
-    //         warnx("running");
-    //     else
-    //         warnx("not running");
-    //     return 0;
-    // }
+    // Command: yona_coaxial_heli status
+    if (!strcmp(argv[1], "status")) {
+        if (thread_running)
+            warnx("running");
+        else
+            warnx("not running");
+        return 0;
+    }
 
-    // console_print("unrecognized command");
-    // return 1;
+    console_print("unrecognized command");
+    return 1;
 }
 
 
