@@ -149,4 +149,7 @@ set(config_module_list
 
 	# Hardware test
 	examples/hwtest
+
+	# Yona
+	examples/yona_coaxial_heli
 )
