@@ -44,7 +44,6 @@
 #include <uORB/topics/vehicle_attitude_setpoint.h>
 #include <uORB/topics/manual_control_setpoint.h>
 #include <uORB/topics/actuator_controls.h>
-#include <uORB/topics/actuator_outputs.h>
 #include <uORB/topics/parameter_update.h>
 #include <uORB/topics/vehicle_global_position.h>
 #include <uORB/topics/vehicle_rates_setpoint.h>
@@ -56,8 +55,8 @@
 
 int init_parameters(struct param_handles *handle);
 int update_parameters(const struct param_handles *handle, struct params *parameters);
-void control_right_stick(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, struct actuator_outputs_s *rotor_outputs, float rc_channel_values[]);
-void control_thrust(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, struct actuator_outputs_s *rotor_outputs, float rc_channel_values[]);
+void control_right_stick(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[]);
+void control_thrust(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[]);
 static void console_print(const char *reason);
 int yona_coaxial_heli_main_thread(int argc, char *argv[]);
 
@@ -90,37 +89,31 @@ int update_parameters(const struct param_handles *handle, struct params *paramet
     return 0;
 }
 
-void control_right_stick(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, struct actuator_outputs_s *rotor_outputs, float rc_channel_values[]) {
+void control_right_stick(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[]) {
     // Control Roll and Pitch
     // Update PI gains
 
     // Setting ROLL and PITCH to 0
-    // actuators->control[0] = rc_channel_values[1]    // ROLL
-    // actuators->control[0] = rc_channel_values[2]    // PITCH
-
-    // actuators->control[0] = 0.0f;
-    // actuators->control[1] = 0.0f;
-
-    // Calculating error and applying P-Gain
-    float roll_err = matrix::Eulerf(matrix::Quatf(att->q)).phi() - matrix::Eulerf(matrix::Quatf(att_sp->q_d)).phi();
-    actuators->control[0] = roll_err * pp.roll_p;
-    rotor_outputs->output[0] = roll_err * pp.roll_p;
+    actuators->control[0] = rc_channel_values[1];    // ROLL
+    actuators->control[1] = rc_channel_values[2];    // PITCH
     
-    float pitch_err = matrix::Eulerf(matrix::Quatf(att->q)).theta() - matrix::Eulerf(matrix::Quatf(att_sp->q_d)).theta();
-    actuators->control[1] = pitch_err * pp.pitch_p;
-    rotor_outputs->output[1] = pitch_err * pp.pitch_p;
+    // Calculating (euler-quat) error and applying P-Gain
+    // float roll_err = matrix::Eulerf(matrix::Quatf(att->q)).phi() - matrix::Eulerf(matrix::Quatf(att_sp->q_d)).phi();
+    // actuators->control[0] = roll_err * pp.roll_p;
+    
+    // float pitch_err = matrix::Eulerf(matrix::Quatf(att->q)).theta() - matrix::Eulerf(matrix::Quatf(att_sp->q_d)).theta();
+    // actuators->control[1] = pitch_err * pp.pitch_p;
 }
 
-void control_thrust(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, struct actuator_outputs_s *rotor_outputs, float rc_channel_values[]) {
+void control_thrust(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[]) {
     // Control thrust
     // TODO: Add a controller to update PI gains on yaw and thrust
 
     actuators->control[2] = rc_channel_values[3];   // YAW
     actuators->control[3] = rc_channel_values[0];   // THRUST
 
-    rotor_outputs->output[2] = rc_channel_values[3];   // YAW
-    rotor_outputs->output[3] = rc_channel_values[0];   // THRUST
-    printf("control_thrust - %f, %f, %f, %f\n", (double)actuators->control[0]*100, (double)actuators->control[1]*100, (double)actuators->control[2]*100, (double)actuators->control[3]*100);
+    actuators->timestamp = hrt_absolute_time();
+    // printf("control_thrust - %f, %f, %f, %f\n", (double)actuators->control[0]*1000, (double)actuators->control[1]*1000, (double)actuators->control[2]*1000, (double)actuators->control[3]*1000);
 }
 
 static void console_print(const char *reason) {
@@ -188,15 +181,10 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
     /* ------ Initializing the Output parameters ------ */
     struct actuator_controls_s actuators;
     memset(&actuators, 0, sizeof(actuators));
-    struct actuator_outputs_s rotor_outputs;
-    memset(&rotor_outputs, 0, sizeof(rotor_outputs));
 
     // Publish 0 values to actuators
     for (unsigned i=0; i < actuator_controls_s::NUM_ACTUATOR_CONTROLS; i++) {
         actuators.control[i] = 0.0f;
-    }
-    for (unsigned i=0; i < actuator_outputs_s::NUM_ACTUATOR_OUTPUTS; i++) {
-        rotor_outputs.output[i] = 0.0f;
     }
 
     struct vehicle_attitude_setpoint_s _att_sp = {};
@@ -205,7 +193,6 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
               these topics (actuator_controls and rates_sp)                     ------ */
     // orb_advertise(topic) returns handles for the topics.
     orb_advert_t actuator_pub = orb_advertise(ORB_ID_VEHICLE_ATTITUDE_CONTROLS, &actuators);
-    orb_advert_t rotor_pub = orb_advertise(ORB_ID(actuator_outputs), &rotor_outputs);
     orb_advert_t rates_pub = orb_advertise(ORB_ID(vehicle_rates_setpoint), &rates_sp);
 
     /* ------ Subscribe to rest of the topics ------ */
@@ -273,11 +260,11 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
 
                 // Checking RC inputs
                 orb_copy(ORB_ID(rc_channels), rc_channels_sub, &rc_channels);
-                printf("Input RC - %f, %f, %f, %f\t\t", (double)rc_channels.channels[1]*1000, (double)rc_channels.channels[2]*1000, (double)rc_channels.channels[3]*1000, (double)rc_channels.channels[0]*1000);
+                // printf("Input RC - %f, %f, %f, %f\t\t", (double)rc_channels.channels[1]*1000, (double)rc_channels.channels[2]*1000, (double)rc_channels.channels[3]*1000, (double)rc_channels.channels[0]*1000);
                 
                 
-                control_right_stick(&att, &_att_sp, &actuators, &rotor_outputs, rc_channels.channels);
-                control_thrust(&att, &_att_sp, &actuators, &rotor_outputs, rc_channels.channels);
+                control_right_stick(&att, &_att_sp, &actuators, rc_channels.channels);
+                control_thrust(&att, &_att_sp, &actuators, rc_channels.channels);
 
                 // if (true) {
                 if (manual_sp_updated) {
@@ -293,23 +280,13 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
                 // Publishing rates
                 orb_publish(ORB_ID(vehicle_rates_setpoint), rates_pub, &rates_sp);
 
-                // // Sanity check and publishing actuator outputs
-                // if (PX4_ISFINITE(actuators.control[0]) && PX4_ISFINITE(actuators.control[1]) && PX4_ISFINITE(actuators.control[2]) && PX4_ISFINITE(actuators.control[3])) {
-                //     orb_publish(ORB_ID_VEHICLE_ATTITUDE_CONTROLS, actuator_pub, &actuators);
-                //     // printf("Actuator outputs - %d, %d, %d, %d\n\n", (int)actuators.control[0]*100, (int)actuators.control[1]*100, (int)actuators.control[2]*100, (int)actuators.control[3]*100);
-
-                //     if (verbose) {
-                //         warnx("Actuator controls - Published");
-                //     }
-                // }
-
                 // Sanity check and publishing actuator outputs
-                if (PX4_ISFINITE(rotor_outputs.output[0]) && PX4_ISFINITE(rotor_outputs.output[1]) && PX4_ISFINITE(rotor_outputs.output[2]) && PX4_ISFINITE(rotor_outputs.output[3])) {
-                    orb_publish(ORB_ID(actuator_outputs), rotor_pub, &rotor_outputs);
-                    // printf("rotor_outputs - %d, %d, %d, %d\n\n", (int)rotor_outputs.control[0]*100, (int)rotor_outputs.control[1]*100, (int)rotor_outputs.control[2]*100, (int)rotor_outputs.control[3]*100);
+                if (PX4_ISFINITE(actuators.control[0]) && PX4_ISFINITE(actuators.control[1]) && PX4_ISFINITE(actuators.control[2]) && PX4_ISFINITE(actuators.control[3])) {
+                    orb_publish(ORB_ID_VEHICLE_ATTITUDE_CONTROLS, actuator_pub, &actuators);
+                    // printf("Actuator outputs - %d, %d, %d, %d\n\n", (int)actuators.control[0]*100, (int)actuators.control[1]*100, (int)actuators.control[2]*100, (int)actuators.control[3]*100);
 
                     if (verbose) {
-                        warnx("Actuator outputs - Published");
+                        warnx("Actuator controls - Published");
                     }
                 }
             }
@@ -323,11 +300,6 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
         actuators.control[i] = 0.0f;
     }
     orb_publish(ORB_ID_VEHICLE_ATTITUDE_CONTROLS, actuator_pub, &actuators);
-    
-    for(unsigned i=0; i<actuator_outputs_s::NUM_ACTUATOR_OUTPUTS; i++) {
-        rotor_outputs.output[i] = 0.0f;
-    }
-    orb_publish(ORB_ID(actuator_outputs), rotor_pub, &actuators);
     
     fflush(stdout);
     return 0;
@@ -381,10 +353,5 @@ int yona_coaxial_heli_main(int argc, char *argv[]) {
 }
 
 
-
-// Thread
-    // Control roll & pitch -> automatically - read inputs and try to correct angles - controller
-    // Control thrust & yaw from radio - callibrate radio - assign channels - map channels to mRo - try using QGC
-// Run the thread in main()
 
 // Add function in init.d file on mRo
