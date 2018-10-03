@@ -55,7 +55,7 @@
 
 int init_parameters(struct param_handles *handle);
 int update_parameters(const struct param_handles *handle, struct params *parameters);
-void control_right_stick(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[]);
+void control_right_stick(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[], bool rp_controller);
 void control_thrust(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[]);
 static void console_print(const char *reason);
 int yona_coaxial_heli_main_thread(int argc, char *argv[]);
@@ -89,20 +89,28 @@ int update_parameters(const struct param_handles *handle, struct params *paramet
     return 0;
 }
 
-void control_right_stick(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[]) {
+void control_right_stick(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[], bool rp_controller) {
     // Control Roll and Pitch
     // Update PI gains
 
     // Setting ROLL and PITCH to 0
-    actuators->control[0] = rc_channel_values[1];    // ROLL
-    actuators->control[1] = rc_channel_values[2];    // PITCH
+    if (rp_controller) {
+        // Calculating (euler-quat) error and applying P-Gain
+        // Roll, Pitch, Yaw -> phi, theta, psi
+        // printf("\n\t\t\t\t Controller ON\n");
+        float roll_err = matrix::Eulerf(matrix::Quatf(att->q)).phi() - matrix::Eulerf(matrix::Quatf(att_sp->q_d)).phi();
+        actuators->control[0] = -1 * roll_err * pp.roll_p;
     
-    // Calculating (euler-quat) error and applying P-Gain
-    // float roll_err = matrix::Eulerf(matrix::Quatf(att->q)).phi() - matrix::Eulerf(matrix::Quatf(att_sp->q_d)).phi();
-    // actuators->control[0] = roll_err * pp.roll_p;
-    
-    // float pitch_err = matrix::Eulerf(matrix::Quatf(att->q)).theta() - matrix::Eulerf(matrix::Quatf(att_sp->q_d)).theta();
-    // actuators->control[1] = pitch_err * pp.pitch_p;
+        float pitch_err = matrix::Eulerf(matrix::Quatf(att->q)).theta() - matrix::Eulerf(matrix::Quatf(att_sp->q_d)).theta();
+        actuators->control[1] = (-1 * pitch_err * pp.pitch_p);
+
+        // printf("att q - %f, %f, %f, %f", (double)att->q[0]*1000, (double)att->q[1]*1000, (double)att->q[2]*1000, (double)att->q[3]*1000);
+        // printf("\t\tatt_sp q_d - %f, %f, %f, %f\n", (double)att_sp->q_d[0]*1000, (double)att_sp->q_d[1]*1000, (double)att_sp->q_d[2]*1000, (double)att_sp->q_d[3]*1000);
+    }
+    else {
+        actuators->control[0] = rc_channel_values[1];    // ROLL
+        actuators->control[1] = -1 * rc_channel_values[2];    // PITCH
+    }
 }
 
 void control_thrust(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[]) {
@@ -120,17 +128,21 @@ static void console_print(const char *reason) {
     if (reason)
         fprintf(stderr, "%s\n", reason);
     
-    fprintf(stderr, "err: yona_coaxial_heli {start|stop|status}\n\n");
+    fprintf(stderr, "Usage: yona_coaxial_heli {start|stop|status}\n\n");
 }
 
 int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
     // Main thread
     /* ------ Reading arguments ------ */
 	bool verbose = false;
+    bool rp_controller = false;
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
 			verbose = true;
 		}
+        if (strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--controller") == 0) {
+            rp_controller = true;
+        }
 	}
 
     /* ------ Initializing the Input parameters ------ */
@@ -155,27 +167,27 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
     memset(&rc_channels, 0, sizeof(rc_channels));
     
 
-    /* ------ Arming ------ */
-    // TODO: Change to a button trigger
-	struct actuator_armed_s arm;
-	memset(&arm, 0, sizeof(arm));
+    // /* ------ Arming ------ */
+    // // TODO: Change to a button trigger
+	// struct actuator_armed_s arm;
+	// memset(&arm, 0, sizeof(arm));
 
-	arm.timestamp = hrt_absolute_time();
-	arm.ready_to_arm = true;
-	arm.armed = true;
-	orb_advert_t arm_pub_ptr = orb_advertise(ORB_ID(actuator_armed), &arm);
-	orb_publish(ORB_ID(actuator_armed), arm_pub_ptr, &arm);
+	// arm.timestamp = hrt_absolute_time();
+	// arm.ready_to_arm = true;
+	// arm.armed = true;
+	// orb_advert_t arm_pub_ptr = orb_advertise(ORB_ID(actuator_armed), &arm);
+	// orb_publish(ORB_ID(actuator_armed), arm_pub_ptr, &arm);
 
-	/* read back values to validate */
-	int arm_sub_fd = orb_subscribe(ORB_ID(actuator_armed));
-	orb_copy(ORB_ID(actuator_armed), arm_sub_fd, &arm);
+	// /* read back values to validate */
+	// int arm_sub_fd = orb_subscribe(ORB_ID(actuator_armed));
+	// orb_copy(ORB_ID(actuator_armed), arm_sub_fd, &arm);
 
-	if (arm.ready_to_arm && arm.armed) {
-		warnx("Actuator armed");
+	// if (arm.ready_to_arm && arm.armed) {
+	// 	warnx("Actuator armed");
 
-	} else {
-		errx(1, "Arming actuators failed");
-	}
+	// } else {
+	// 	errx(1, "Arming actuators failed");
+	// }
 
 
     /* ------ Initializing the Output parameters ------ */
@@ -262,15 +274,14 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
                 orb_copy(ORB_ID(rc_channels), rc_channels_sub, &rc_channels);
                 // printf("Input RC - %f, %f, %f, %f\t\t", (double)rc_channels.channels[1]*1000, (double)rc_channels.channels[2]*1000, (double)rc_channels.channels[3]*1000, (double)rc_channels.channels[0]*1000);
                 
-                
-                control_right_stick(&att, &_att_sp, &actuators, rc_channels.channels);
+                control_right_stick(&att, &_att_sp, &actuators, rc_channels.channels, rp_controller);
                 control_thrust(&att, &_att_sp, &actuators, rc_channels.channels);
 
-                // if (true) {
-                if (manual_sp_updated) {
-                    orb_copy(ORB_ID(manual_control_setpoint), manual_sp_sub, &manual_sp);
-                    // printf("manual_sp - %d, %d, %d, %d\n", (int)manual_sp.x*1000, (int)manual_sp.y*1000, (int)manual_sp.z*1000, (int)manual_sp.r*1000);
-                }
+                // // if (true) {
+                // if (manual_sp_updated) {
+                //     orb_copy(ORB_ID(manual_control_setpoint), manual_sp_sub, &manual_sp);
+                //     // printf("manual_sp - %d, %d, %d, %d\n", (int)manual_sp.x*1000, (int)manual_sp.y*1000, (int)manual_sp.z*1000, (int)manual_sp.r*1000);
+                // }
 
                 // TODO: Throttle limit check.?
 
@@ -308,7 +319,7 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
 int yona_coaxial_heli_main(int argc, char *argv[]) {
     PX4_INFO("__ YONA __");
 
-    // Checking for arguments in the command {start|status|stop}        // TODO: Keep this.?
+    // Checking for arguments in the command {start|status|stop|tune}        // TODO: Keep this.?
     if (argc < 2) {
         console_print("missing command");
         return 1;
@@ -353,5 +364,9 @@ int yona_coaxial_heli_main(int argc, char *argv[]) {
 }
 
 
-
-// Add function in init.d file on mRo
+// Check pre-flight checklist
+// Check disarm time delay (mRo arms at non-min throttle after disarming < 4 sec)
+// Change the controller for roll and pitch
+// Add controller for yaw
+// Add function in init.d file on mRo - Test
+// Add position hold mode (built in function <uses GPS.?> __OR__ radio switch toggle.?)
