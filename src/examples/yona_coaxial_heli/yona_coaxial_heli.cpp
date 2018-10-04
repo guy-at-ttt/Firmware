@@ -70,6 +70,7 @@ static int deamon_task;
 static struct params pp;
 static struct param_handles ph;
 
+hrt_abstime curr_time, prev_time, st_time;
 
 
 int init_parameters(struct param_handles *handle) {
@@ -91,23 +92,36 @@ int update_parameters(const struct param_handles *handle, struct params *paramet
 
 void control_right_stick(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[], bool rp_controller) {
     // Control Roll and Pitch
-    // Update PI gains
-
-    // Setting ROLL and PITCH to 0
+    // Update PID gains
     if (rp_controller) {
         // Calculating (euler-quat) error and applying P-Gain
         // Roll, Pitch, Yaw -> phi, theta, psi
-        // printf("\n\t\t\t\t Controller ON\n");
-        float roll_err = matrix::Eulerf(matrix::Quatf(att->q)).phi() - matrix::Eulerf(matrix::Quatf(att_sp->q_d)).phi();
-        actuators->control[0] = -1 * roll_err * pp.roll_p;
-    
-        float pitch_err = matrix::Eulerf(matrix::Quatf(att->q)).theta() - matrix::Eulerf(matrix::Quatf(att_sp->q_d)).theta();
-        actuators->control[1] = (-1 * pitch_err * pp.pitch_p);
+        float roll_err = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).phi() - matrix::Eulerf(matrix::Quatf(att->q)).phi();
+        float pitch_err = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).theta() - matrix::Eulerf(matrix::Quatf(att->q)).theta();
 
-        // printf("att q - %f, %f, %f, %f", (double)att->q[0]*1000, (double)att->q[1]*1000, (double)att->q[2]*1000, (double)att->q[3]*1000);
+        curr_time = hrt_absolute_time();
+        float dt = (curr_time - prev_time)/1000000;         // dt in seconds        // TODO: Check
+        if (dt < 0.002f)
+            dt = 0.002f;
+        if (dt > 0.02f)
+            dt = 0.02f;
+        // printf("dt: %5.5f\troll err: %5.5f, pitch_err: %5.5f\n", (double)dt, (double)roll_err, (double)pitch_err);
+        // dt = dt;
+
+        actuators->control[0] = (roll_err * pp.roll_p) - ((roll_err / dt) * pp.roll_d);          // ROLL
+        actuators->control[1] = (pitch_err * pp.pitch_p) - ((pitch_err / dt) * pp.pitch_d);        // PITCH
+
+        prev_time = hrt_absolute_time();
+
+        // printf("Att:\trollspeed: %3.5f\tpitchspeed:%3.5f\tyawspeed: %3.5f\n", (double)att->rollspeed, (double)att->pitchspeed, (double)att->yawspeed);
+        // printf("Att_SP:\trollbody: %3.5f\tpitchbody:%3.5f\tyawbody: %3.5f\t, thrust: %3.5f\n", (double)att_sp->roll_body, (double)att_sp->pitch_body, (double)att_sp->yaw_body, (double)att_sp->thrust);
+        // printf("Timestamps:\tatt: %d\tatt_sp: %d\n\n", att->timestamp, att_sp->timestamp);
+
+        // printf("att q - %3.5f, %3.5f, %3.5f, %3.5f\n", (double)att->q[0], (double)att->q[1], (double)att->q[2], (double)att->q[3]);
         // printf("\t\tatt_sp q_d - %f, %f, %f, %f\n", (double)att_sp->q_d[0]*1000, (double)att_sp->q_d[1]*1000, (double)att_sp->q_d[2]*1000, (double)att_sp->q_d[3]*1000);
     }
     else {
+        // Setting ROLL and PITCH to 0
         actuators->control[0] = rc_channel_values[1];    // ROLL
         actuators->control[1] = -1 * rc_channel_values[2];    // PITCH
     }
@@ -116,8 +130,11 @@ void control_right_stick(const struct vehicle_attitude_s *att, const struct vehi
 void control_thrust(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[]) {
     // Control thrust
     // TODO: Add a controller to update PI gains on yaw and thrust
-
-    actuators->control[2] = rc_channel_values[3];   // YAW
+    
+    float yaw_err = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).psi() - matrix::Eulerf(matrix::Quatf(att->q)).psi();
+    
+    actuators->control[2] = yaw_err * pp.yaw_p;            // YAW
+    // actuators->control[2] = rc_channel_values[3];          // YAW
     actuators->control[3] = rc_channel_values[0];   // THRUST
 
     actuators->timestamp = hrt_absolute_time();
@@ -136,6 +153,16 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
     /* ------ Reading arguments ------ */
 	bool verbose = false;
     bool rp_controller = false;
+    bool tune_params = false;
+    // bool tune_flags[6] = {false, false, false, false, false, false};
+    bool tune_flags[12] = {};
+    for (int i = 0; i < 12; i++)
+        tune_flags[i] = false;
+    float tmp_roll[3] = {0.0f, 0.0f, 0.0f};
+    float tmp_roll_d = 0.000f;
+    float tmp_pitch[3] = {0.0f, 0.0f, 0.000f};
+    float tmp_yaw[3] = {0.0f, 0.0f, 0.0f};
+    
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
 			verbose = true;
@@ -143,11 +170,97 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
         if (strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--controller") == 0) {
             rp_controller = true;
         }
+        if (strcmp(argv[i], "-t") == 0 || strcmp(argv[i], "--tune") == 0) {
+            if ((i + 2) < argc) {
+                tune_params = true;
+                if (strcmp(argv[i+1], "rp") == 0) {
+                    tune_flags[0] = true;
+                    tmp_roll[0] = atof(argv[i+2]);
+                    printf("\tChanging Roll Proportional Gain (rp) value to: %1.2f\n", (double)tmp_roll[0]);
+                }
+                if (strcmp(argv[i+1], "ri") == 0) {
+                    tune_flags[1] = true;
+                    tmp_roll[1] = atof(argv[i+2]);
+                    printf("\tChanging Roll Integral Gain (ri) value to: %s\n", argv[i+2]);
+                }
+                if (strcmp(argv[i+1], "rd") == 0) {
+                    tune_flags[2] = true;
+                    tmp_roll_d = atof(argv[i+2]);
+                    printf("\tChanging Roll Derivative Gain (rd) value to: %2.3f\n", (double)tmp_roll_d);
+                }
+                
+                if (strcmp(argv[i+1], "pp") == 0) {
+                    tune_flags[3] = true;
+                    tmp_pitch[0] = atof(argv[i+2]);
+                    printf("\tChanging Pitch Proportional Gain (pp) value to: %s\n", argv[i+2]);
+                }
+                if (strcmp(argv[i+1], "pi") == 0) {
+                    tune_flags[4] = true;
+                    tmp_pitch[1] = atof(argv[i+2]);
+                    printf("\tChanging Pitch Integral Gain (pi) value to: %s\n", argv[i+2]);
+                }
+                if (strcmp(argv[i+1], "pd") == 0) {
+                    tune_flags[5] = true;
+                    tmp_pitch[2] = atof(argv[i+2]);
+                    printf("\tChanging Pitch Derivative Gain (pd) value to: %2.3f\n", (double)tmp_pitch[2]);
+                }
+                
+                if (strcmp(argv[i+1], "yp") == 0) {
+                    tune_flags[6] = true;
+                    tmp_yaw[0] = atof(argv[i+2]);
+                    printf("\tChanging Yaw Proportional Gain (yp) value to: %s\n", argv[i+2]);
+                }
+                if (strcmp(argv[i+1], "yi") == 0) {
+                    tune_flags[7] = true;
+                    tmp_yaw[1] = atof(argv[i+2]);
+                    printf("\tChanging Yaw Integral Gain (yi) value to: %s\n", argv[i+2]);
+                }
+                if (strcmp(argv[i+1], "yd") == 0) {
+                    tune_flags[8] = true;
+                    tmp_yaw[2] = atof(argv[i+2]);
+                    printf("\tChanging Yaw Derivative Gain (yd) value to: %s\n", argv[i+2]);
+                }
+            }
+            else {
+                // TODO: Edit
+                console_print("Usage: yona_coaxial_heli start -t <parameter> <value>\n\n\tparameters:\n\t\trp\tRoll Proportional Gain\n\t\tpp\tPitch Proportional Gain\n\n\tvalues:\n\t\trp\tmin:0, max:12.00\n\t\tpp\tmin:0, max:12.00\n\n");
+            }
+        }
 	}
 
     /* ------ Initializing the Input parameters ------ */
+    
     init_parameters(&ph);
+    if (tune_params) {
+        if(tune_flags[0])
+            param_set(ph.roll_p, (const void*)&tmp_roll[0]);
+        if(tune_flags[1])
+            param_set(ph.roll_i, (const void*)&tmp_roll[1]);
+        if(tune_flags[2])
+            param_set(ph.roll_d, (const void*)&tmp_roll[2]);
+        
+        if(tune_flags[3])
+            param_set(ph.pitch_p, (const void*)&tmp_pitch[0]);
+        if(tune_flags[4])
+            param_set(ph.pitch_i, (const void*)&tmp_pitch[1]);
+        if(tune_flags[5])
+            param_set(ph.pitch_d, (const void*)&tmp_pitch[2]);
+        
+        if(tune_flags[6])
+            param_set(ph.yaw_p, (const void*)&tmp_yaw[0]);
+        if(tune_flags[7])
+            param_set(ph.yaw_i, (const void*)&tmp_yaw[1]);
+        if(tune_flags[8])
+            param_set(ph.yaw_d, (const void*)&tmp_yaw[2]);
+    }
+    for (int i = 0; i < 12; i++) {
+        printf(tune_flags[i] ? "true\n" : "false\n");
+        tune_flags[i] = false;
+    }
+
     update_parameters(&ph, &pp);
+    printf("GAINS:\n\troll p: %2.3f\n\troll i: %2.3f\n\troll d: %2.3f\n\tpitch p: %2.3f\n\tpitch i: %2.3f\n\tpitch d: %2.3f\n\tyaw p: %2.3f\n\tyaw i: %2.3f\n\tyaw d: %2.3f\n", (double)pp.roll_p, (double)pp.roll_i, (double)pp.roll_d, (double)pp.pitch_p, (double)pp.pitch_i, (double)pp.pitch_d, (double)pp.yaw_p, (double)pp.yaw_i, (double)pp.yaw_d);
+
 
     struct vehicle_attitude_s att;
     memset(&att, 0, sizeof(att));
@@ -218,6 +331,9 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
     int param_sub = orb_subscribe(ORB_ID(parameter_update));
     int rc_channels_sub = orb_subscribe(ORB_ID(rc_channels));
 
+    st_time = hrt_absolute_time();
+    prev_time = st_time;
+
 
     struct pollfd fds[2] = {};
     fds[0].fd = param_sub;          // Descriptor being polled
@@ -247,8 +363,9 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
             if (fds[0].revents & POLLIN) {
                 struct parameter_update_s value_updates;
                 orb_copy(ORB_ID(parameter_update), param_sub, &value_updates);
+                
+                // TODO: Update gains while running 'start -c'.?
 
-                // Reading the updated values
                 update_parameters(&ph, &pp);
             }
 
@@ -261,12 +378,12 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
                 orb_check(global_pos_sub, &pos_updated);
                 bool global_sp_updated;
                 orb_check(global_sp_sub, &global_sp_updated);
-                bool att_updated;
-                orb_check(att_sp_sub, &att_updated);
+                bool att_sp_updated;
+                orb_check(att_sp_sub, &att_sp_updated);
 
                 // Creating a local copy
                 orb_copy(ORB_ID(vehicle_attitude), att_sub, &att);
-                if (att_updated) {
+                if (att_sp_updated) {
                     orb_copy(ORB_ID(vehicle_attitude_setpoint), att_sp_sub, &_att_sp);
                 }
 
@@ -325,13 +442,14 @@ int yona_coaxial_heli_main(int argc, char *argv[]) {
         return 1;
     }
 
+    printf("\nMAIN argc: %d\n", argc);
     // Command: yona_coaxial_heli start
     if (!strcmp(argv[1], "start")) {
         if (thread_running) {
             warnx("running");
             return 0;
         }
-
+        
         thread_should_exit = false;
         // px4_task_spawn_cmd - name, (int) scheduler, (int) priority, (int) stack_size, (px4_main_t) entry, argv[]
         deamon_task = px4_task_spawn_cmd("yona_coaxial_heli",
@@ -339,7 +457,7 @@ int yona_coaxial_heli_main(int argc, char *argv[]) {
                                         SCHED_PRIORITY_MAX - 20,
                                         2048,
                                         yona_coaxial_heli_main_thread,
-                                        (argv) ? (char *const *)&argv[2] : (char *const *)nullptr);
+                                        (argv) ? (char *const *)argv : (char *const *)nullptr);
         thread_running = true;
         return 0;
     }
