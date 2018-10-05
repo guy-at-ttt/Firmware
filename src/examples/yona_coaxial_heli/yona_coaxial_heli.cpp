@@ -56,7 +56,7 @@
 int init_parameters(struct param_handles *handle);
 int update_parameters(const struct param_handles *handle, struct params *parameters);
 void control_right_stick(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[], bool rp_controller);
-void control_thrust(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[]);
+void control_thrust(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[], bool y_controller);
 static void console_print(const char *reason);
 int yona_coaxial_heli_main_thread(int argc, char *argv[]);
 
@@ -70,23 +70,47 @@ static int deamon_task;
 static struct params pp;
 static struct param_handles ph;
 
+float last_roll_err = 0.0f, last_pitch_err = 0.0f, last_yaw_err = 0.0f;
+
 hrt_abstime curr_time, prev_time, st_time;
 
 
 int init_parameters(struct param_handles *handle) {
     handle->roll_p = param_find("YONA_ROLL_P");
+    handle->roll_i = param_find("YONA_ROLL_I");
+    handle->roll_d = param_find("YONA_ROLL_D");
+
     handle->pitch_p = param_find("YONA_PITCH_P");
+    handle->pitch_i = param_find("YONA_PITCH_I");
+    handle->pitch_d = param_find("YONA_PITCH_D");
+
     handle->yaw_p = param_find("YONA_YAW_P");
+    handle->yaw_i = param_find("YONA_YAW_I");
+    handle->yaw_d = param_find("YONA_YAW_D");
+
     handle->thrust_p = param_find("YONA_THRUST_P");
+    handle->thrust_i = param_find("YONA_THRUST_I");
+    handle->thrust_d = param_find("YONA_THRUST_D");
     return 0;
 }
 
 int update_parameters(const struct param_handles *handle, struct params *parameters) {
     // Copy values from parameters to the handles
     param_get(handle->roll_p, &(parameters->roll_p));
+    param_get(handle->roll_i, &(parameters->roll_i));
+    param_get(handle->roll_d, &(parameters->roll_d));
+
     param_get(handle->pitch_p, &(parameters->pitch_p));
+    param_get(handle->pitch_i, &(parameters->pitch_i));
+    param_get(handle->pitch_d, &(parameters->pitch_d));
+
     param_get(handle->yaw_p, &(parameters->yaw_p));
+    param_get(handle->yaw_i, &(parameters->yaw_i));
+    param_get(handle->yaw_d, &(parameters->yaw_d));
+
     param_get(handle->thrust_p, &(parameters->thrust_p));
+    param_get(handle->thrust_i, &(parameters->thrust_i));
+    param_get(handle->thrust_d, &(parameters->thrust_d));
     return 0;
 }
 
@@ -96,6 +120,7 @@ void control_right_stick(const struct vehicle_attitude_s *att, const struct vehi
     if (rp_controller) {
         // Calculating (euler-quat) error and applying P-Gain
         // Roll, Pitch, Yaw -> phi, theta, psi
+        // float tmp = matrix::Eulerf(matrix::Quatf(att->q)).phi();
         float roll_err = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).phi() - matrix::Eulerf(matrix::Quatf(att->q)).phi();
         float pitch_err = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).theta() - matrix::Eulerf(matrix::Quatf(att->q)).theta();
 
@@ -105,13 +130,17 @@ void control_right_stick(const struct vehicle_attitude_s *att, const struct vehi
             dt = 0.002f;
         if (dt > 0.02f)
             dt = 0.02f;
-        // printf("dt: %5.5f\troll err: %5.5f, pitch_err: %5.5f\n", (double)dt, (double)roll_err, (double)pitch_err);
+        // printf("roll err: %5.5f, tmp: %5.5f\n", (double)roll_err, (double)tmp);//, (double)pitch_err);
         // dt = dt;
 
-        actuators->control[0] = (roll_err * pp.roll_p) - ((roll_err / dt) * pp.roll_d);          // ROLL
-        actuators->control[1] = (pitch_err * pp.pitch_p) - ((pitch_err / dt) * pp.pitch_d);        // PITCH
+        actuators->control[0] = (roll_err * pp.roll_p) + (((roll_err - last_roll_err) / dt) * pp.roll_d);          // ROLL
+        actuators->control[1] = (pitch_err * pp.pitch_p) + (((pitch_err - last_pitch_err) / dt) * pp.pitch_d);        // PITCH
+
+        // printf("roll err: %5.5f, tmp: %5.5f\n", (double)(yaw_err * pp.yaw_p), (double)(((yaw_err - last_yaw_err) / dt) * pp.yaw_d));//, (double)pitch_err);
 
         prev_time = hrt_absolute_time();
+        last_roll_err = roll_err;
+        last_pitch_err = pitch_err;
 
         // printf("Att:\trollspeed: %3.5f\tpitchspeed:%3.5f\tyawspeed: %3.5f\n", (double)att->rollspeed, (double)att->pitchspeed, (double)att->yawspeed);
         // printf("Att_SP:\trollbody: %3.5f\tpitchbody:%3.5f\tyawbody: %3.5f\t, thrust: %3.5f\n", (double)att_sp->roll_body, (double)att_sp->pitch_body, (double)att_sp->yaw_body, (double)att_sp->thrust);
@@ -127,17 +156,32 @@ void control_right_stick(const struct vehicle_attitude_s *att, const struct vehi
     }
 }
 
-void control_thrust(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[]) {
+void control_thrust(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[], bool y_controller) {
     // Control thrust
     // TODO: Add a controller to update PI gains on yaw and thrust
-    
-    float yaw_err = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).psi() - matrix::Eulerf(matrix::Quatf(att->q)).psi();
-    
-    actuators->control[2] = yaw_err * pp.yaw_p;            // YAW
-    // actuators->control[2] = rc_channel_values[3];          // YAW
     actuators->control[3] = rc_channel_values[0];   // THRUST
+    
+    // YAW
+    if (y_controller) {
+        float yaw_err = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).psi() - matrix::Eulerf(matrix::Quatf(att->q)).psi();
+
+        curr_time = hrt_absolute_time();
+        float dt = (curr_time - prev_time)/1000000;         // dt in seconds        // TODO: Check
+        if (dt < 0.002f)
+            dt = 0.002f;
+        if (dt > 0.02f)
+            dt = 0.02f;
+        
+        actuators->control[2] = (yaw_err * pp.yaw_p) + (((yaw_err - last_yaw_err) / dt) * pp.yaw_d);            // YAW        
+        prev_time = hrt_absolute_time();
+        last_yaw_err = yaw_err;
+    }
+    else {
+        actuators->control[2] = rc_channel_values[3];          // YAW
+    }
 
     actuators->timestamp = hrt_absolute_time();
+
     // printf("control_thrust - %f, %f, %f, %f\n", (double)actuators->control[0]*1000, (double)actuators->control[1]*1000, (double)actuators->control[2]*1000, (double)actuators->control[3]*1000);
 }
 
@@ -153,14 +197,14 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
     /* ------ Reading arguments ------ */
 	bool verbose = false;
     bool rp_controller = false;
+    bool y_controller = false;
     bool tune_params = false;
     // bool tune_flags[6] = {false, false, false, false, false, false};
     bool tune_flags[12] = {};
     for (int i = 0; i < 12; i++)
         tune_flags[i] = false;
     float tmp_roll[3] = {0.0f, 0.0f, 0.0f};
-    float tmp_roll_d = 0.000f;
-    float tmp_pitch[3] = {0.0f, 0.0f, 0.000f};
+    float tmp_pitch[3] = {0.0f, 0.0f, 0.0f};
     float tmp_yaw[3] = {0.0f, 0.0f, 0.0f};
     
 	for (int i = 1; i < argc; i++) {
@@ -169,6 +213,11 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
 		}
         if (strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--controller") == 0) {
             rp_controller = true;
+        }
+        
+        if (strcmp(argv[i], "-yc") == 0 || strcmp(argv[i], "--yawcontroller") == 0) {
+            rp_controller = true;
+            y_controller = true;
         }
         if (strcmp(argv[i], "-t") == 0 || strcmp(argv[i], "--tune") == 0) {
             if ((i + 2) < argc) {
@@ -185,8 +234,8 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
                 }
                 if (strcmp(argv[i+1], "rd") == 0) {
                     tune_flags[2] = true;
-                    tmp_roll_d = atof(argv[i+2]);
-                    printf("\tChanging Roll Derivative Gain (rd) value to: %2.3f\n", (double)tmp_roll_d);
+                    tmp_roll[2] = atof(argv[i+2]);
+                    printf("\tChanging Roll Derivative Gain (rd) value to: %2.3f\n", (double)tmp_roll[2]);
                 }
                 
                 if (strcmp(argv[i+1], "pp") == 0) {
@@ -254,7 +303,7 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
             param_set(ph.yaw_d, (const void*)&tmp_yaw[2]);
     }
     for (int i = 0; i < 12; i++) {
-        printf(tune_flags[i] ? "true\n" : "false\n");
+        // printf(tune_flags[i] ? "true\n" : "false\n");
         tune_flags[i] = false;
     }
 
@@ -392,7 +441,7 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
                 // printf("Input RC - %f, %f, %f, %f\t\t", (double)rc_channels.channels[1]*1000, (double)rc_channels.channels[2]*1000, (double)rc_channels.channels[3]*1000, (double)rc_channels.channels[0]*1000);
                 
                 control_right_stick(&att, &_att_sp, &actuators, rc_channels.channels, rp_controller);
-                control_thrust(&att, &_att_sp, &actuators, rc_channels.channels);
+                control_thrust(&att, &_att_sp, &actuators, rc_channels.channels, y_controller);
 
                 // // if (true) {
                 // if (manual_sp_updated) {
