@@ -36,6 +36,7 @@
 #include <perf/perf_counter.h>
 #include <systemlib/err.h>
 #include <matrix/math.hpp>
+#include <drivers/drv_rc_input.h>
 
 // Publisher and Subscriber includes
 #include <uORB/uORB.h>
@@ -50,8 +51,15 @@
 #include <uORB/topics/position_setpoint_triplet.h>
 #include <uORB/topics/actuator_armed.h>
 #include <uORB/topics/rc_channels.h>
+#include <uORB/topics/sensor_combined.h>
+#include <uORB/topics/sensor_gyro.h>
+#include <uORB/topics/sensor_correction.h>
+#include <uORB/topics/sensor_bias.h>
 
-#include <drivers/drv_rc_input.h>
+#include <mathlib/math/Limits.hpp>
+#include <mathlib/math/Functions.hpp>
+
+# define MAX_GYRO_COUNT 3
 
 int init_parameters(struct param_handles *handle);
 int update_parameters(const struct param_handles *handle, struct params *parameters);
@@ -64,15 +72,18 @@ extern "C" __EXPORT int yona_coaxial_heli_main(int argc, char *argv[]);
 // __EXPORT int yona_coaxial_heli_main(int argc, char *argv[]);
 
 
+static int deamon_task;
 static bool thread_should_exit = false;
 static bool thread_running = false;
-static int deamon_task;
 static struct params pp;
 static struct param_handles ph;
 
+int gyro_count = 0;
+int gyro_selected = 0;
+int gyro_sub[MAX_GYRO_COUNT];
 float last_roll_err = 0.0f, last_pitch_err = 0.0f, last_yaw_err = 0.0f;
 
-hrt_abstime curr_time, prev_time, st_time;
+hrt_abstime rp_curr_time, rp_prev_time, y_curr_time, y_prev_time, st_time;
 
 
 int init_parameters(struct param_handles *handle) {
@@ -124,8 +135,8 @@ void control_right_stick(const struct vehicle_attitude_s *att, const struct vehi
         float roll_err = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).phi() - matrix::Eulerf(matrix::Quatf(att->q)).phi();
         float pitch_err = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).theta() - matrix::Eulerf(matrix::Quatf(att->q)).theta();
 
-        curr_time = hrt_absolute_time();
-        float dt = (curr_time - prev_time)/1000000;         // dt in seconds        // TODO: Check
+        rp_curr_time = hrt_absolute_time();
+        float dt = (rp_curr_time - rp_prev_time)/1000000;         // dt in seconds        // TODO: Check
         if (dt < 0.002f)
             dt = 0.002f;
         if (dt > 0.02f)
@@ -138,7 +149,7 @@ void control_right_stick(const struct vehicle_attitude_s *att, const struct vehi
 
         // printf("roll err: %5.5f, tmp: %5.5f\n", (double)(yaw_err * pp.yaw_p), (double)(((yaw_err - last_yaw_err) / dt) * pp.yaw_d));//, (double)pitch_err);
 
-        prev_time = hrt_absolute_time();
+        rp_prev_time = hrt_absolute_time();
         last_roll_err = roll_err;
         last_pitch_err = pitch_err;
 
@@ -165,15 +176,15 @@ void control_thrust(const struct vehicle_attitude_s *att, const struct vehicle_a
     if (y_controller) {
         float yaw_err = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).psi() - matrix::Eulerf(matrix::Quatf(att->q)).psi();
 
-        curr_time = hrt_absolute_time();
-        float dt = (curr_time - prev_time)/1000000;         // dt in seconds        // TODO: Check
+        y_curr_time = hrt_absolute_time();
+        float dt = (y_curr_time - y_prev_time)/1000000;         // dt in seconds        // TODO: Check
         if (dt < 0.002f)
             dt = 0.002f;
         if (dt > 0.02f)
             dt = 0.02f;
         
         actuators->control[2] = (yaw_err * pp.yaw_p) + (((yaw_err - last_yaw_err) / dt) * pp.yaw_d);            // YAW        
-        prev_time = hrt_absolute_time();
+        y_prev_time = hrt_absolute_time();
         last_yaw_err = yaw_err;
     }
     else {
@@ -311,22 +322,29 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
     printf("GAINS:\n\troll p: %2.3f\n\troll i: %2.3f\n\troll d: %2.3f\n\tpitch p: %2.3f\n\tpitch i: %2.3f\n\tpitch d: %2.3f\n\tyaw p: %2.3f\n\tyaw i: %2.3f\n\tyaw d: %2.3f\n", (double)pp.roll_p, (double)pp.roll_i, (double)pp.roll_d, (double)pp.pitch_p, (double)pp.pitch_i, (double)pp.pitch_d, (double)pp.yaw_p, (double)pp.yaw_i, (double)pp.yaw_d);
 
 
-    struct vehicle_attitude_s att;
+    struct vehicle_attitude_s           att;
+    struct vehicle_attitude_setpoint_s  att_sp;
+    struct manual_control_setpoint_s    manual_sp;
+    struct vehicle_status_s             v_status;
+    struct vehicle_rates_setpoint_s     rates_sp;
+    struct vehicle_global_position_s    global_pos;
+	struct position_setpoint_s          global_sp;
+    struct rc_channels_s                rc_channels;
+	struct sensor_gyro_s			    gyro_sensor;           // gyro data before thermal correctons and ekf bias estimates are applied
+	struct sensor_correction_s		    gyro_correction;    // sensor thermal corrections
+	struct sensor_bias_s			    gyro_bias;          // sensor in-run bias corrections
+
+    
     memset(&att, 0, sizeof(att));
-    struct vehicle_attitude_setpoint_s att_sp;
     memset(&att_sp, 0, sizeof(att_sp));
-    struct manual_control_setpoint_s manual_sp;
     memset(&manual_sp, 0, sizeof(manual_sp));
-    struct vehicle_status_s v_status;
     memset(&v_status, 0, sizeof(v_status));
-    struct vehicle_rates_setpoint_s rates_sp;
     memset(&rates_sp, 0, sizeof(rates_sp));
-    struct vehicle_global_position_s global_pos;
 	memset(&global_pos, 0, sizeof(global_pos));
-	struct position_setpoint_s global_sp;
 	memset(&global_sp, 0, sizeof(global_sp));
-    struct rc_channels_s rc_channels;
     memset(&rc_channels, 0, sizeof(rc_channels));
+    memset(&gyro_sensor, 0, sizeof(gyro_sensor));
+    memset(&gyro_correction, 0, sizeof(gyro_correction));
     
 
     // /* ------ Arming ------ */
@@ -361,8 +379,6 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
         actuators.control[i] = 0.0f;
     }
 
-    struct vehicle_attitude_setpoint_s _att_sp = {};
-
     /* ------ Advertise these controllers (actuator_pub and rates_pub) as publishers of
               these topics (actuator_controls and rates_sp)                     ------ */
     // orb_advertise(topic) returns handles for the topics.
@@ -380,8 +396,18 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
     int param_sub = orb_subscribe(ORB_ID(parameter_update));
     int rc_channels_sub = orb_subscribe(ORB_ID(rc_channels));
 
+	gyro_count = math::min(orb_group_count(ORB_ID(sensor_gyro)), MAX_GYRO_COUNT);
+	if (gyro_count == 0)
+		gyro_count = 1;
+	for (int i = 0; i < gyro_count; i++)
+		gyro_sub[i] = orb_subscribe_multi(ORB_ID(sensor_gyro), i);
+
+	int gyro_correction_sub = orb_subscribe(ORB_ID(sensor_correction));
+	int gyro_bias_sub = orb_subscribe(ORB_ID(sensor_bias));
+
     st_time = hrt_absolute_time();
-    prev_time = st_time;
+    rp_prev_time = st_time;
+    y_prev_time = st_time;
 
 
     struct pollfd fds[2] = {};
@@ -423,31 +449,38 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
                 // Checking for new position setpoint
                 bool manual_sp_updated;
                 orb_check(manual_sp_sub, &manual_sp_updated);
+                // if (manual_sp_updated)
+                //     orb_copy(ORB_ID(manual_sp), param_sub, &value_updates);
                 bool pos_updated;
                 orb_check(global_pos_sub, &pos_updated);
                 bool global_sp_updated;
                 orb_check(global_sp_sub, &global_sp_updated);
                 bool att_sp_updated;
                 orb_check(att_sp_sub, &att_sp_updated);
-
+                
+                bool gyro_updated;
+                orb_check(gyro_correction_sub, &gyro_updated);
+                if (gyro_updated)
+                    orb_copy(ORB_ID(sensor_correction), gyro_correction_sub, &gyro_correction);
+                /* update the latest gyro selection */
+                if (gyro_correction.selected_gyro_instance < gyro_count)
+                    gyro_selected = gyro_correction.selected_gyro_instance;
+                
+                bool gyro_bias_updated;
+                orb_check(gyro_bias_sub, &gyro_bias_updated);
+                if (gyro_bias_updated)
+                    orb_copy(ORB_ID(sensor_bias), gyro_bias_sub, &gyro_bias);
                 // Creating a local copy
                 orb_copy(ORB_ID(vehicle_attitude), att_sub, &att);
-                if (att_sp_updated) {
-                    orb_copy(ORB_ID(vehicle_attitude_setpoint), att_sp_sub, &_att_sp);
-                }
+                if (att_sp_updated)
+                    orb_copy(ORB_ID(vehicle_attitude_setpoint), att_sp_sub, &att_sp);
 
                 // Checking RC inputs
                 orb_copy(ORB_ID(rc_channels), rc_channels_sub, &rc_channels);
                 // printf("Input RC - %f, %f, %f, %f\t\t", (double)rc_channels.channels[1]*1000, (double)rc_channels.channels[2]*1000, (double)rc_channels.channels[3]*1000, (double)rc_channels.channels[0]*1000);
                 
-                control_right_stick(&att, &_att_sp, &actuators, rc_channels.channels, rp_controller);
-                control_thrust(&att, &_att_sp, &actuators, rc_channels.channels, y_controller);
-
-                // // if (true) {
-                // if (manual_sp_updated) {
-                //     orb_copy(ORB_ID(manual_control_setpoint), manual_sp_sub, &manual_sp);
-                //     // printf("manual_sp - %d, %d, %d, %d\n", (int)manual_sp.x*1000, (int)manual_sp.y*1000, (int)manual_sp.z*1000, (int)manual_sp.r*1000);
-                // }
+                control_right_stick(&att, &att_sp, &actuators, rc_channels.channels, rp_controller);
+                control_thrust(&att, &att_sp, &actuators, rc_channels.channels, y_controller);
 
                 // TODO: Throttle limit check.?
 

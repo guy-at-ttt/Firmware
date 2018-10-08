@@ -49,27 +49,30 @@
 
 #include <uORB/uORB.h>
 #include <uORB/topics/sensor_combined.h>
+#include <uORB/topics/sensor_gyro.h>
 #include <uORB/topics/vehicle_attitude.h>
 
 __EXPORT int px4_simple_app_main(int argc, char *argv[]);
 
+int _gyro_count = 1;
+int _sensor_gyro_sub[3];
+
 int px4_simple_app_main(int argc, char *argv[])
 {
-	PX4_INFO("Hello Earth!");
+	// PX4_INFO("Hello Earth!");
 
 	/* subscribe to sensor_combined topic */
 	int sensor_sub_fd = orb_subscribe(ORB_ID(sensor_combined));
+	for (int s = 0; s <= _gyro_count; s++)
+		_sensor_gyro_sub[s] = orb_subscribe_multi(ORB_ID(sensor_gyro), s);
 	/* limit the update rate to 5 Hz */
 	orb_set_interval(sensor_sub_fd, 200);
-
-	/* advertise attitude topic */
-	struct vehicle_attitude_s att;
-	memset(&att, 0, sizeof(att));
-	orb_advert_t att_pub = orb_advertise(ORB_ID(vehicle_attitude), &att);
 
 	/* one could wait for multiple topics with this technique, just using one here */
 	px4_pollfd_struct_t fds[] = {
 		{ .fd = sensor_sub_fd,   .events = POLLIN },
+		{ .fd = _sensor_gyro_sub[0], .events = POLLIN },
+		{ .fd = _sensor_gyro_sub[1], .events = POLLIN },
 		/* there could be more file descriptors here, in the form like:
 		 * { .fd = other_sub_fd,   .events = POLLIN },
 		 */
@@ -77,9 +80,9 @@ int px4_simple_app_main(int argc, char *argv[])
 
 	int error_counter = 0;
 
-	for (int i = 0; i < 5; i++) {
+	for (int i = 0; i < 15; i++) {
 		/* wait for sensor update of 1 file descriptor for 1000 ms (1 second) */
-		int poll_ret = px4_poll(fds, 1, 1000);
+		int poll_ret = px4_poll(fds, 3, 500);
 
 		/* handle the poll result */
 		if (poll_ret == 0) {
@@ -97,33 +100,39 @@ int px4_simple_app_main(int argc, char *argv[])
 
 		} else {
 
-			if (fds[0].revents & POLLIN) {
+			// if (fds[0].revents & POLLIN) {
 				/* obtained data for the first file descriptor */
 				struct sensor_combined_s raw;
 				/* copy sensors raw data into local buffer */
 				orb_copy(ORB_ID(sensor_combined), sensor_sub_fd, &raw);
-				PX4_INFO("Accelerometer:\t%8.4f\t%8.4f\t%8.4f",
+				struct sensor_gyro_s gyro_raw;
+				orb_copy(ORB_ID(sensor_gyro), _sensor_gyro_sub[0], &gyro_raw);
+				struct sensor_gyro_s gyro_rawone;
+				orb_copy(ORB_ID(sensor_gyro), _sensor_gyro_sub[1], &gyro_rawone);
+				printf("\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\n",//\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\n",
 					 (double)raw.accelerometer_m_s2[0],
 					 (double)raw.accelerometer_m_s2[1],
-					 (double)raw.accelerometer_m_s2[2]);
-
-				/* set att and publish this information for other apps
-				 the following does not have any meaning, it's just an example
-				*/
-				att.q[0] = raw.accelerometer_m_s2[0];
-				att.q[1] = raw.accelerometer_m_s2[1];
-				att.q[2] = raw.accelerometer_m_s2[2];
-
-				orb_publish(ORB_ID(vehicle_attitude), att_pub, &att);
-			}
-
-			/* there could be more file descriptors here, in the form like:
-			 * if (fds[1..n].revents & POLLIN) {}
-			 */
+					 (double)raw.accelerometer_m_s2[2],
+					 (double)raw.gyro_rad[0],
+					 (double)raw.gyro_rad[1],
+					 (double)raw.gyro_rad[2],
+					 (double)gyro_raw.x,
+					 (double)gyro_raw.y,
+					 (double)gyro_raw.z,
+					 (double)gyro_raw.x_raw,
+					 (double)gyro_raw.y_raw,
+					 (double)gyro_raw.z_raw);
+					//  (double)gyro_rawone.x,
+					//  (double)gyro_rawone.y,
+					//  (double)gyro_rawone.z,
+					//  (double)gyro_rawone.x_raw,
+					//  (double)gyro_rawone.y_raw,
+					//  (double)gyro_rawone.z_raw);
+			// }
 		}
 	}
 
-	PX4_INFO("exiting");
+	// PX4_INFO("exiting");
 
 	return 0;
 }
