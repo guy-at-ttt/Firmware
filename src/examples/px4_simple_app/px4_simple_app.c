@@ -37,15 +37,17 @@
  *
  * @author Example User <mail@example.com>
  */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+// #include <matrix/math.hpp>
 
 #include <px4_config.h>
 #include <px4_tasks.h>
 #include <px4_posix.h>
 #include <unistd.h>
-#include <stdio.h>
 #include <poll.h>
-#include <string.h>
-#include <math.h>
 
 #include <uORB/uORB.h>
 #include <uORB/topics/sensor_combined.h>
@@ -63,6 +65,7 @@ int px4_simple_app_main(int argc, char *argv[])
 
 	/* subscribe to sensor_combined topic */
 	int sensor_sub_fd = orb_subscribe(ORB_ID(sensor_combined));
+	int att_sub = orb_subscribe(ORB_ID(vehicle_attitude));
 	for (int s = 0; s <= _gyro_count; s++)
 		_sensor_gyro_sub[s] = orb_subscribe_multi(ORB_ID(sensor_gyro), s);
 	/* limit the update rate to 5 Hz */
@@ -70,7 +73,7 @@ int px4_simple_app_main(int argc, char *argv[])
 
 	/* one could wait for multiple topics with this technique, just using one here */
 	px4_pollfd_struct_t fds[] = {
-		{ .fd = sensor_sub_fd,   .events = POLLIN },
+		{ .fd = att_sub,   .events = POLLIN },
 		{ .fd = _sensor_gyro_sub[0], .events = POLLIN },
 		{ .fd = _sensor_gyro_sub[1], .events = POLLIN },
 		/* there could be more file descriptors here, in the form like:
@@ -103,16 +106,36 @@ int px4_simple_app_main(int argc, char *argv[])
 			// if (fds[0].revents & POLLIN) {
 				/* obtained data for the first file descriptor */
 				struct sensor_combined_s raw;
+				struct vehicle_attitude_s att;
 				/* copy sensors raw data into local buffer */
 				orb_copy(ORB_ID(sensor_combined), sensor_sub_fd, &raw);
+				orb_copy(ORB_ID(vehicle_attitude), att_sub, &att);
 				struct sensor_gyro_s gyro_raw;
 				orb_copy(ORB_ID(sensor_gyro), _sensor_gyro_sub[0], &gyro_raw);
 				struct sensor_gyro_s gyro_rawone;
 				orb_copy(ORB_ID(sensor_gyro), _sensor_gyro_sub[1], &gyro_rawone);
+				
+				// roll (x-axis rotation)
+				double sinr_cosp = +2.0 * (double)(att.q[0] * att.q[1] + att.q[2] * att.q[3]);
+				double cosr_cosp = +1.0 - 2.0 * (double)(att.q[1] * att.q[1] + att.q[2] * att.q[2]);
+				double roll = atan2(sinr_cosp, cosr_cosp), pitch;
+
+				// pitch (y-axis rotation)
+				double sinp = +2.0 * (double)(att.q[0] * att.q[2] - att.q[3] * att.q[1]);
+				if (fabs(sinp) >= 1)
+					pitch = copysign(3.14 / 2, sinp); // use 90 degrees if out of range
+				else
+					pitch = asin(sinp);
+
+				// yaw (z-axis rotation)
+				double siny_cosp = +2.0 * (double)(att.q[0] * att.q[3] + att.q[1] * att.q[2]);
+				double cosy_cosp = +1.0 - 2.0 * (double)(att.q[2] * att.q[2] + att.q[3] * att.q[3]);  
+				double yaw = atan2(siny_cosp, cosy_cosp);
+				
 				printf("\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\n",//\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\n",
-					 (double)raw.accelerometer_m_s2[0],
-					 (double)raw.accelerometer_m_s2[1],
-					 (double)raw.accelerometer_m_s2[2],
+					 roll,
+					 pitch,
+					 yaw,
 					 (double)raw.gyro_rad[0],
 					 (double)raw.gyro_rad[1],
 					 (double)raw.gyro_rad[2],
@@ -122,6 +145,9 @@ int px4_simple_app_main(int argc, char *argv[])
 					 (double)gyro_raw.x_raw,
 					 (double)gyro_raw.y_raw,
 					 (double)gyro_raw.z_raw);
+					 //  (double)raw.accelerometer_m_s2[0],
+					//  (double)raw.accelerometer_m_s2[1],
+					//  (double)raw.accelerometer_m_s2[2],
 					//  (double)gyro_rawone.x,
 					//  (double)gyro_rawone.y,
 					//  (double)gyro_rawone.z,

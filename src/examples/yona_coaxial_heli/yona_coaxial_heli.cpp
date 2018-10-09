@@ -36,6 +36,7 @@
 #include <perf/perf_counter.h>
 #include <systemlib/err.h>
 #include <matrix/math.hpp>
+#include <matrix/matrix/math.hpp>
 #include <drivers/drv_rc_input.h>
 
 // Publisher and Subscriber includes
@@ -63,8 +64,8 @@
 
 int init_parameters(struct param_handles *handle);
 int update_parameters(const struct param_handles *handle, struct params *parameters);
-void control_right_stick(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[], bool rp_controller);
-void control_thrust(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[], bool y_controller);
+void control_right_stick(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[], int yaw_controller_select);
+void control_thrust(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[], int yaw_controller_select);
 static void console_print(const char *reason);
 int yona_coaxial_heli_main_thread(int argc, char *argv[]);
 
@@ -81,6 +82,10 @@ static struct param_handles ph;
 int gyro_count = 0;
 int gyro_selected = 0;
 int gyro_sub[MAX_GYRO_COUNT];
+
+float p_err = 0.0f, d_err = 0.0f, dt = 0.0f;
+float roll_err_acc = 0.0f, pitch_err_acc = 0.0f, yaw_err_acc = 0.0f;
+float roll_err_gyro = 0.0f, pitch_err_gyro = 0.0f, yaw_err_gyro = 0.0f;
 float last_roll_err = 0.0f, last_pitch_err = 0.0f, last_yaw_err = 0.0f;
 
 hrt_abstime rp_curr_time, rp_prev_time, y_curr_time, y_prev_time, st_time;
@@ -102,6 +107,9 @@ int init_parameters(struct param_handles *handle) {
     handle->thrust_p = param_find("YONA_THRUST_P");
     handle->thrust_i = param_find("YONA_THRUST_I");
     handle->thrust_d = param_find("YONA_THRUST_D");
+
+    handle->alpha = param_find("YONA_ALPHA");
+    handle->time_diff = param_find("YONA_TIME_DIFF");
     return 0;
 }
 
@@ -122,78 +130,194 @@ int update_parameters(const struct param_handles *handle, struct params *paramet
     param_get(handle->thrust_p, &(parameters->thrust_p));
     param_get(handle->thrust_i, &(parameters->thrust_i));
     param_get(handle->thrust_d, &(parameters->thrust_d));
+
+    param_get(handle->alpha, &(parameters->alpha));
+    param_get(handle->time_diff, &(parameters->time_diff));
     return 0;
 }
 
-void control_right_stick(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[], bool rp_controller) {
+void control_right_stick(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[], int rp_controller_select) {
     // Control Roll and Pitch
-    // Update PID gains
-    if (rp_controller) {
-        // Calculating (euler-quat) error and applying P-Gain
-        // Roll, Pitch, Yaw -> phi, theta, psi
-        // float tmp = matrix::Eulerf(matrix::Quatf(att->q)).phi();
-        float roll_err = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).phi() - matrix::Eulerf(matrix::Quatf(att->q)).phi();
-        float pitch_err = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).theta() - matrix::Eulerf(matrix::Quatf(att->q)).theta();
-
-        rp_curr_time = hrt_absolute_time();
-        float dt = (rp_curr_time - rp_prev_time)/1000000;         // dt in seconds        // TODO: Check
-        if (dt < 0.002f)
-            dt = 0.002f;
-        if (dt > 0.02f)
-            dt = 0.02f;
-        // printf("roll err: %5.5f, tmp: %5.5f\n", (double)roll_err, (double)tmp);//, (double)pitch_err);
-        // dt = dt;
-
-        actuators->control[0] = (roll_err * pp.roll_p) + (((roll_err - last_roll_err) / dt) * pp.roll_d);          // ROLL
-        actuators->control[1] = (pitch_err * pp.pitch_p) + (((pitch_err - last_pitch_err) / dt) * pp.pitch_d);        // PITCH
-
-        // printf("roll err: %5.5f, tmp: %5.5f\n", (double)(yaw_err * pp.yaw_p), (double)(((yaw_err - last_yaw_err) / dt) * pp.yaw_d));//, (double)pitch_err);
-
-        rp_prev_time = hrt_absolute_time();
-        last_roll_err = roll_err;
-        last_pitch_err = pitch_err;
-
-        // printf("Att:\trollspeed: %3.5f\tpitchspeed:%3.5f\tyawspeed: %3.5f\n", (double)att->rollspeed, (double)att->pitchspeed, (double)att->yawspeed);
-        // printf("Att_SP:\trollbody: %3.5f\tpitchbody:%3.5f\tyawbody: %3.5f\t, thrust: %3.5f\n", (double)att_sp->roll_body, (double)att_sp->pitch_body, (double)att_sp->yaw_body, (double)att_sp->thrust);
-        // printf("Timestamps:\tatt: %d\tatt_sp: %d\n\n", att->timestamp, att_sp->timestamp);
-
-        // printf("att q - %3.5f, %3.5f, %3.5f, %3.5f\n", (double)att->q[0], (double)att->q[1], (double)att->q[2], (double)att->q[3]);
-        // printf("\t\tatt_sp q_d - %f, %f, %f, %f\n", (double)att_sp->q_d[0]*1000, (double)att_sp->q_d[1]*1000, (double)att_sp->q_d[2]*1000, (double)att_sp->q_d[3]*1000);
-    }
-    else {
-        // Setting ROLL and PITCH to 0
+    if (rp_controller_select == 0) {
+        // Setting ROLL and PITCH to RC input values
         actuators->control[0] = rc_channel_values[1];    // ROLL
         actuators->control[1] = -1 * rc_channel_values[2];    // PITCH
     }
-}
-
-void control_thrust(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[], bool y_controller) {
-    // Control thrust
-    // TODO: Add a controller to update PI gains on yaw and thrust
-    actuators->control[3] = rc_channel_values[0];   // THRUST
     
-    // YAW
-    if (y_controller) {
-        float yaw_err = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).psi() - matrix::Eulerf(matrix::Quatf(att->q)).psi();
+    else if (rp_controller_select == 1) {
+        // PD - accelerometer as Proportional
+        //      gyro as Derivative
+        
+        // Calculating (euler-quat) error and applying P-Gain - accelerometer
+        // Roll, Pitch, Yaw -> phi, theta, psi
+        roll_err_acc = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).phi() - matrix::Eulerf(matrix::Quatf(att->q)).phi();
+        pitch_err_acc = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).theta() - matrix::Eulerf(matrix::Quatf(att->q)).theta();
 
-        y_curr_time = hrt_absolute_time();
-        float dt = (y_curr_time - y_prev_time)/1000000;         // dt in seconds        // TODO: Check
+        roll_err_gyro = att_sp->roll_body - att->rollspeed;
+        pitch_err_gyro = att_sp->pitch_body - att->pitchspeed;
+
+        rp_curr_time = hrt_absolute_time();
+        dt = (rp_curr_time - rp_prev_time)/1000000;         // dt in seconds        // TODO: Check
         if (dt < 0.002f)
             dt = 0.002f;
         if (dt > 0.02f)
             dt = 0.02f;
         
-        actuators->control[2] = (yaw_err * pp.yaw_p) + (((yaw_err - last_yaw_err) / dt) * pp.yaw_d);            // YAW        
-        y_prev_time = hrt_absolute_time();
-        last_yaw_err = yaw_err;
+        p_err = roll_err_acc;
+        d_err = roll_err_gyro;
+        actuators->control[0] = (p_err * pp.roll_p) + (d_err * pp.roll_d);          // ROLL
+        
+        p_err = pitch_err_acc;
+        d_err = pitch_err_gyro;
+        actuators->control[1] = (p_err * pp.pitch_p) + (d_err * pp.pitch_d);          // PITCH
+        last_roll_err = roll_err_acc;
     }
+    
+    else if (rp_controller_select == 2) {
+        // PD - accelerometer and gyro - Complementary Filter
+        roll_err_acc = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).phi() - matrix::Eulerf(matrix::Quatf(att->q)).phi();
+        pitch_err_acc = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).theta() - matrix::Eulerf(matrix::Quatf(att->q)).theta();
+
+        roll_err_gyro = att_sp->roll_body - att->rollspeed;
+        pitch_err_gyro = att_sp->pitch_body - att->pitchspeed;
+
+        rp_curr_time = hrt_absolute_time();
+        dt = (rp_curr_time - rp_prev_time)/1000000;         // dt in seconds        // TODO: Check
+        if (dt < 0.002f)
+            dt = 0.002f;
+        if (dt > 0.02f)
+            dt = 0.02f;
+
+        p_err = (pp.alpha * roll_err_gyro * dt) + ((1.0f - pp.alpha) * roll_err_acc);
+        d_err = (p_err - last_roll_err) / dt;
+        actuators->control[0] = (p_err * pp.roll_p) + (d_err * pp.roll_d);              // ROLL
+        last_roll_err = p_err;
+        
+        p_err = (pp.alpha * pitch_err_gyro * dt) + ((1.0f - pp.alpha) * pitch_err_acc);
+        d_err = (p_err - last_pitch_err) / dt;
+        actuators->control[1] = (p_err * pp.pitch_p) + (d_err * pp.pitch_d);              // PITCH
+        last_pitch_err = p_err;
+
+        rp_prev_time = hrt_absolute_time();
+    }
+    
+    else if (rp_controller_select == 3) {
+        // PD - accelerometer only
+        roll_err_acc = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).phi() - matrix::Eulerf(matrix::Quatf(att->q)).phi();
+        pitch_err_acc = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).theta() - matrix::Eulerf(matrix::Quatf(att->q)).theta();
+
+        rp_curr_time = hrt_absolute_time();
+        dt = (rp_curr_time - rp_prev_time)/1000000;         // dt in seconds        // TODO: Check
+        if (dt < 0.002f)
+            dt = 0.002f;
+        if (dt > 0.02f)
+            dt = 0.02f;
+        
+        p_err = roll_err_acc;
+        d_err = ((roll_err_acc - last_roll_err) / dt);
+        actuators->control[0] = (p_err * pp.roll_p) + (d_err * pp.roll_d);              // ROLL
+        
+        p_err = pitch_err_acc;
+        d_err = ((pitch_err_acc - last_pitch_err) / dt);
+        actuators->control[1] = (p_err * pp.pitch_p) + (d_err * pp.pitch_d);            // PITCH
+
+        rp_prev_time = hrt_absolute_time();
+        last_roll_err = roll_err_acc;
+        last_pitch_err = pitch_err_acc;
+    }
+
     else {
+        warnx("Invalid Controller");
+    }
+
+    // printf("roll err: %5.5f, tmp: %5.5f\n", (double)(yaw_err_acc * pp.yaw_p), (double)(((yaw_err_acc - last_yaw_err) / dt) * pp.yaw_d));//, (double)pitch_err_acc);
+
+    rp_prev_time = hrt_absolute_time();
+    last_roll_err = roll_err_acc;
+    last_pitch_err = pitch_err_acc;
+}
+
+void control_thrust(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[], int yaw_controller_select) {
+    // YAW
+    if (yaw_controller_select == 0) {
+        // Radio input
         actuators->control[2] = rc_channel_values[3];          // YAW
     }
 
-    actuators->timestamp = hrt_absolute_time();
+    else if (yaw_controller_select == 1) {
+        // PD - accelerometer as Proportional
+        //      gyro as Derivative
+        yaw_err_acc = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).psi() - matrix::Eulerf(matrix::Quatf(att->q)).psi();
+        yaw_err_gyro = att_sp->yaw_body - att->yawspeed;
 
-    // printf("control_thrust - %f, %f, %f, %f\n", (double)actuators->control[0]*1000, (double)actuators->control[1]*1000, (double)actuators->control[2]*1000, (double)actuators->control[3]*1000);
+        y_curr_time = hrt_absolute_time();
+        dt = (y_curr_time - y_prev_time)/1000000;         // dt in seconds        // TODO: Check
+        if (dt < 0.002f)
+            dt = 0.002f;
+        if (dt > 0.02f)
+            dt = 0.02f;
+
+        p_err = yaw_err_acc;
+        d_err = (yaw_err_acc * pp.time_diff) - yaw_err_gyro;
+        // printf("%3.4f\t%3.4f\t%3.4f\t\t", (double)(yaw_err_acc * pp.time_diff), (double)d_err, (double)yaw_err_gyro);
+        actuators->control[2] = (p_err * pp.yaw_p) + (d_err * pp.yaw_d);            // YAW
+        
+        y_prev_time = hrt_absolute_time();
+        last_yaw_err = yaw_err_acc;
+    }
+
+    else if (yaw_controller_select == 2) {
+        // PD - accelerometer and gyro - Complementary Filter
+        yaw_err_acc = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).psi() - matrix::Eulerf(matrix::Quatf(att->q)).psi();
+        yaw_err_gyro = att_sp->yaw_body - att->yawspeed;
+
+        y_curr_time = hrt_absolute_time();
+        dt = (y_curr_time - y_prev_time)/1000000;         // dt in seconds        // TODO: Check
+        if (dt < 0.002f)
+            dt = 0.002f;
+        if (dt > 0.02f)
+            dt = 0.02f;
+
+        p_err = (pp.alpha * yaw_err_gyro * dt) + ((1 - pp.alpha) * yaw_err_acc);
+        d_err = (p_err - last_yaw_err) / dt;
+        actuators->control[2] = (p_err * pp.yaw_p) + (d_err * pp.yaw_d);            // YAW
+        
+        y_prev_time = hrt_absolute_time();
+        last_yaw_err = yaw_err_acc;
+    }
+
+    else if (yaw_controller_select == 3) {
+        // PD - accelerometer only
+        yaw_err_acc = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).psi() - matrix::Eulerf(matrix::Quatf(att->q)).psi();
+
+        y_curr_time = hrt_absolute_time();
+        dt = (y_curr_time - y_prev_time)/1000000;         // dt in seconds        // TODO: Check
+        if (dt < 0.002f)
+            dt = 0.002f;
+        if (dt > 0.02f)
+            dt = 0.02f;
+        
+        p_err = yaw_err_acc;
+        d_err = (yaw_err_acc - last_yaw_err) / dt;
+        actuators->control[2] = (p_err * pp.yaw_p) + (d_err * pp.yaw_d);            // YAW
+        
+        y_prev_time = hrt_absolute_time();
+        last_yaw_err = yaw_err_acc;
+    }
+
+    else {
+        warnx("Invalid Yaw Controller");
+    }
+    
+    // THRUST
+    actuators->control[3] = rc_channel_values[0];
+    
+    actuators->timestamp = hrt_absolute_time();
+    // printf("%5.4f, %5.4f, %5.4f\t\t%5.4f, %5.4f, %5.4f\n",
+    //                     (double)matrix::Eulerf(matrix::Quatf(att->q)).phi(),
+    //                     (double)matrix::Eulerf(matrix::Quatf(att->q)).theta(),
+    //                     (double)matrix::Eulerf(matrix::Quatf(att->q)).psi(),
+    //                     (double)att->rollspeed, (double)att->pitchspeed, (double)att->yawspeed);
 }
 
 static void console_print(const char *reason) {
@@ -207,8 +331,12 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
     // Main thread
     /* ------ Reading arguments ------ */
 	bool verbose = false;
-    bool rp_controller = false;
-    bool y_controller = false;
+    // bool rp_controller = false;
+    // bool y_controller = false;
+    float alpha = 0.02f, time_diff = 0.1f;
+    int rp_controller_select = 0, yaw_controller_select = 0;
+    bool tune_alpha = false;
+    bool tune_timediff = false;
     bool tune_params = false;
     // bool tune_flags[6] = {false, false, false, false, false, false};
     bool tune_flags[12] = {};
@@ -223,13 +351,106 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
 			verbose = true;
 		}
         if (strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--controller") == 0) {
-            rp_controller = true;
+            // rp_controller = true;
+            if ((i + 1) < argc) {
+                if (!strcmp(argv[i+1], "manual") || !strcmp(argv[i+1], "0")) {
+                    rp_controller_select = 0;
+                    yaw_controller_select = 0;
+                }
+                else if (!strcmp(argv[i+1], "gyrod") || !strcmp(argv[i+1], "1")) {
+                    rp_controller_select = 1;
+                    yaw_controller_select = 0;
+                    
+                    if (!strcmp(argv[i+2], "timediff") || !strcmp(argv[i+1], "td")) {
+                        tune_timediff = true;
+                        time_diff = atof(argv[i+3]);
+                        printf("\tChanging inverse of time difference for gryo derivative to: %2.3d\n", (double)time_diff);
+                    }
+                    else {
+                        tune_timediff = true;
+                        time_diff = 10.0f;
+                        printf("\tChanging inverse of time difference for gryo derivative to: %2.3d\n", (double)time_diff);
+                    }
+                }
+                else if (!strcmp(argv[i+1], "comp") || !strcmp(argv[i+1], "2")) {
+                    rp_controller_select = 2;
+                    yaw_controller_select = 0;
+
+                    if (!strcmp(argv[i+2], "alpha") || !strcmp(argv[i+1], "a")) {
+                        tune_alpha = true;
+                        alpha = atof(argv[i+3]);
+                        printf("\tChanging complimentary filter coefficient ALPHA to: %2.3d\n", (double)alpha);
+                    }
+                    else {
+                        tune_alpha = true;
+                        alpha = 0.02f;
+                        printf("\tChanging complimentary filter coefficient ALPHA to: %2.3d\n", (double)alpha);
+                    }
+                }
+                else if (!strcmp(argv[i+1], "accpd") || !strcmp(argv[i+1], "3")) {
+                    rp_controller_select = 3;
+                    yaw_controller_select = 0;
+                }
+                else {
+                    fprintf(stderr, "Usage: yona_coaxial_heli start -c <value> \n\tValues:\n\t\t0 | manual\t\t- Radio Control\n\t\t1 | gyrod\t\t- P (accelerometer) and D (gyro)\n\t\t2 | comp\t\t- PD with complementary filter on accelerometer and gyro\n\t\t3 | accpd\t\t- PD with accelerometer only");
+                }
+            }
+            else {
+                fprintf(stderr, "Usage: yona_coaxial_heli start -c <value> \n\tValues:\n\t\t0 | manual\t\t- Radio Control\n\t\t1 | gyrod\t\t- P (accelerometer) and D (gyro)\n\t\t2 | comp\t\t- PD with complementary filter on accelerometer and gyro\n\t\t3 | accpd\t\t- PD with accelerometer only");
+            }
         }
         
         if (strcmp(argv[i], "-yc") == 0 || strcmp(argv[i], "--yawcontroller") == 0) {
-            rp_controller = true;
-            y_controller = true;
+            // rp_controller = true;
+            // y_controller = true;
+            if ((i + 1) < argc) {
+                if (!strcmp(argv[i+1], "manual") || !strcmp(argv[i+1], "0")) {
+                    rp_controller_select = 0;
+                    yaw_controller_select = 0;
+                }
+                else if (!strcmp(argv[i+1], "gyrod") || !strcmp(argv[i+1], "1")) {
+                    rp_controller_select = 1;
+                    yaw_controller_select = 1;
+                    
+                    if (!strcmp(argv[i+2], "timediff") || !strcmp(argv[i+1], "td")) {
+                        tune_timediff = true;
+                        time_diff = atof(argv[i+3]);
+                        printf("\tChanging inverse of time difference for gryo derivative to: %2.3d\n", (double)time_diff);
+                    }
+                    else {
+                        tune_timediff = true;
+                        time_diff = 10.0f;
+                        printf("\tChanging inverse of time difference for gryo derivative to: %2.3d\n", (double)time_diff);
+                    }
+                }
+                else if (!strcmp(argv[i+1], "comp") || !strcmp(argv[i+1], "2")) {
+                    rp_controller_select = 2;
+                    yaw_controller_select = 2;
+
+                    if (!strcmp(argv[i+2], "alpha") || !strcmp(argv[i+1], "a")) {
+                        tune_alpha = true;
+                        alpha = atof(argv[i+3]);
+                        printf("\tChanging complimentary filter coefficient ALPHA to: %2.3d\n", (double)alpha);
+                    }
+                    else {
+                        tune_alpha = true;
+                        alpha = 0.02f;
+                        printf("\tChanging complimentary filter coefficient ALPHA to: %2.3d\n", (double)alpha);
+                    }
+                }
+                else if (!strcmp(argv[i+1], "accpd") || !strcmp(argv[i+1], "3")) {
+                    rp_controller_select = 3;
+                    yaw_controller_select = 3;
+                }
+                else {
+                    fprintf(stderr, "Usage: yona_coaxial_heli start -yc <value> \n\tValues:\n\t\t0 | manual\t\t- Radio Control\n\t\t1 | gyrod\t\t- P (accelerometer) and D (gyro)\n\t\t2 | comp\t\t- PD with complementary filter on accelerometer and gyro\n\t\t3 | accpd\t\t- PD with accelerometer only");
+                }
+            }
+            else {
+                fprintf(stderr, "Usage: yona_coaxial_heli start -yc <value> \n\tValues:\n\t\t0 | manual\t\t- Radio Control\n\t\t1 | gyrod\t\t- P (accelerometer) and D (gyro)\n\t\t2 | comp\t\t- PD with complementary filter on accelerometer and gyro\n\t\t3 | accpd\t\t- PD with accelerometer only");
+            }
         }
+        
         if (strcmp(argv[i], "-t") == 0 || strcmp(argv[i], "--tune") == 0) {
             if ((i + 2) < argc) {
                 tune_params = true;
@@ -238,52 +459,55 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
                     tmp_roll[0] = atof(argv[i+2]);
                     printf("\tChanging Roll Proportional Gain (rp) value to: %1.2f\n", (double)tmp_roll[0]);
                 }
-                if (strcmp(argv[i+1], "ri") == 0) {
+                else if (strcmp(argv[i+1], "ri") == 0) {
                     tune_flags[1] = true;
                     tmp_roll[1] = atof(argv[i+2]);
                     printf("\tChanging Roll Integral Gain (ri) value to: %s\n", argv[i+2]);
                 }
-                if (strcmp(argv[i+1], "rd") == 0) {
+                else if (strcmp(argv[i+1], "rd") == 0) {
                     tune_flags[2] = true;
                     tmp_roll[2] = atof(argv[i+2]);
                     printf("\tChanging Roll Derivative Gain (rd) value to: %2.3f\n", (double)tmp_roll[2]);
                 }
                 
-                if (strcmp(argv[i+1], "pp") == 0) {
+                else if (strcmp(argv[i+1], "pp") == 0) {
                     tune_flags[3] = true;
                     tmp_pitch[0] = atof(argv[i+2]);
                     printf("\tChanging Pitch Proportional Gain (pp) value to: %s\n", argv[i+2]);
                 }
-                if (strcmp(argv[i+1], "pi") == 0) {
+                else if (strcmp(argv[i+1], "pi") == 0) {
                     tune_flags[4] = true;
                     tmp_pitch[1] = atof(argv[i+2]);
                     printf("\tChanging Pitch Integral Gain (pi) value to: %s\n", argv[i+2]);
                 }
-                if (strcmp(argv[i+1], "pd") == 0) {
+                else if (strcmp(argv[i+1], "pd") == 0) {
                     tune_flags[5] = true;
                     tmp_pitch[2] = atof(argv[i+2]);
                     printf("\tChanging Pitch Derivative Gain (pd) value to: %2.3f\n", (double)tmp_pitch[2]);
                 }
                 
-                if (strcmp(argv[i+1], "yp") == 0) {
+                else if (strcmp(argv[i+1], "yp") == 0) {
                     tune_flags[6] = true;
                     tmp_yaw[0] = atof(argv[i+2]);
                     printf("\tChanging Yaw Proportional Gain (yp) value to: %s\n", argv[i+2]);
                 }
-                if (strcmp(argv[i+1], "yi") == 0) {
+                else if (strcmp(argv[i+1], "yi") == 0) {
                     tune_flags[7] = true;
                     tmp_yaw[1] = atof(argv[i+2]);
                     printf("\tChanging Yaw Integral Gain (yi) value to: %s\n", argv[i+2]);
                 }
-                if (strcmp(argv[i+1], "yd") == 0) {
+                else if (strcmp(argv[i+1], "yd") == 0) {
                     tune_flags[8] = true;
                     tmp_yaw[2] = atof(argv[i+2]);
                     printf("\tChanging Yaw Derivative Gain (yd) value to: %s\n", argv[i+2]);
                 }
+                
+                else
+                    fprintf(stderr, "Usage: yona_coaxial_heli start -t <parameter> <value>\n\n\tparameters:\n\t\trp\tRoll Proportional Gain\n\t\tpp\tPitch Proportional Gain\n\n\tvalues:\n\t\trp\tmin:0, max:12.00\n\t\tpp\tmin:0, max:12.00\n\n");
             }
             else {
                 // TODO: Edit
-                console_print("Usage: yona_coaxial_heli start -t <parameter> <value>\n\n\tparameters:\n\t\trp\tRoll Proportional Gain\n\t\tpp\tPitch Proportional Gain\n\n\tvalues:\n\t\trp\tmin:0, max:12.00\n\t\tpp\tmin:0, max:12.00\n\n");
+                fprintf(stderr, "Usage: yona_coaxial_heli start -t <parameter> <value>\n\n\tparameters:\n\t\trp\tRoll Proportional Gain\n\t\tpp\tPitch Proportional Gain\n\n\tvalues:\n\t\trp\tmin:0, max:12.00\n\t\tpp\tmin:0, max:12.00\n\n");
             }
         }
 	}
@@ -292,26 +516,31 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
     
     init_parameters(&ph);
     if (tune_params) {
-        if(tune_flags[0])
+        if (tune_flags[0])
             param_set(ph.roll_p, (const void*)&tmp_roll[0]);
-        if(tune_flags[1])
+        if (tune_flags[1])
             param_set(ph.roll_i, (const void*)&tmp_roll[1]);
-        if(tune_flags[2])
+        if (tune_flags[2])
             param_set(ph.roll_d, (const void*)&tmp_roll[2]);
         
-        if(tune_flags[3])
+        if (tune_flags[3])
             param_set(ph.pitch_p, (const void*)&tmp_pitch[0]);
-        if(tune_flags[4])
+        if (tune_flags[4])
             param_set(ph.pitch_i, (const void*)&tmp_pitch[1]);
-        if(tune_flags[5])
+        if (tune_flags[5])
             param_set(ph.pitch_d, (const void*)&tmp_pitch[2]);
         
-        if(tune_flags[6])
+        if (tune_flags[6])
             param_set(ph.yaw_p, (const void*)&tmp_yaw[0]);
-        if(tune_flags[7])
+        if (tune_flags[7])
             param_set(ph.yaw_i, (const void*)&tmp_yaw[1]);
-        if(tune_flags[8])
+        if (tune_flags[8])
             param_set(ph.yaw_d, (const void*)&tmp_yaw[2]);
+
+        if (tune_alpha)
+            param_set(ph.alpha, (const void*)&alpha);
+        if (tune_timediff)
+            param_set(ph.time_diff, (const void*)&time_diff);
     }
     for (int i = 0; i < 12; i++) {
         // printf(tune_flags[i] ? "true\n" : "false\n");
@@ -319,7 +548,7 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
     }
 
     update_parameters(&ph, &pp);
-    printf("GAINS:\n\troll p: %2.3f\n\troll i: %2.3f\n\troll d: %2.3f\n\tpitch p: %2.3f\n\tpitch i: %2.3f\n\tpitch d: %2.3f\n\tyaw p: %2.3f\n\tyaw i: %2.3f\n\tyaw d: %2.3f\n", (double)pp.roll_p, (double)pp.roll_i, (double)pp.roll_d, (double)pp.pitch_p, (double)pp.pitch_i, (double)pp.pitch_d, (double)pp.yaw_p, (double)pp.yaw_i, (double)pp.yaw_d);
+    printf("GAINS:\n\troll p: %2.3f\n\troll i: %2.3f\n\troll d: %2.3f\n\tpitch p: %2.3f\n\tpitch i: %2.3f\n\tpitch d: %2.3f\n\tyaw p: %2.3f\n\tyaw i: %2.3f\n\tyaw d: %2.3f\n\talpha (complementary filter): %2.3f\n\ttime_diff: %2.3f\n", (double)pp.roll_p, (double)pp.roll_i, (double)pp.roll_d, (double)pp.pitch_p, (double)pp.pitch_i, (double)pp.pitch_d, (double)pp.yaw_p, (double)pp.yaw_i, (double)pp.yaw_d, (double)pp.alpha, (double)pp.time_diff);
 
 
     struct vehicle_attitude_s           att;
@@ -458,11 +687,16 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
                 bool att_sp_updated;
                 orb_check(att_sp_sub, &att_sp_updated);
                 
+                // Creating a local copy
+                orb_copy(ORB_ID(vehicle_attitude), att_sub, &att);
+                if (att_sp_updated)
+                    orb_copy(ORB_ID(vehicle_attitude_setpoint), att_sp_sub, &att_sp);
+                
                 bool gyro_updated;
                 orb_check(gyro_correction_sub, &gyro_updated);
                 if (gyro_updated)
                     orb_copy(ORB_ID(sensor_correction), gyro_correction_sub, &gyro_correction);
-                /* update the latest gyro selection */
+                // Update the latest gyro selection
                 if (gyro_correction.selected_gyro_instance < gyro_count)
                     gyro_selected = gyro_correction.selected_gyro_instance;
                 
@@ -470,17 +704,31 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
                 orb_check(gyro_bias_sub, &gyro_bias_updated);
                 if (gyro_bias_updated)
                     orb_copy(ORB_ID(sensor_bias), gyro_bias_sub, &gyro_bias);
-                // Creating a local copy
-                orb_copy(ORB_ID(vehicle_attitude), att_sub, &att);
-                if (att_sp_updated)
-                    orb_copy(ORB_ID(vehicle_attitude_setpoint), att_sp_sub, &att_sp);
-
+                
+                float rates[3] = {0.0f, 0.0f, 0.0f};
+                if (gyro_selected == 0) {
+                    rates[0] = (gyro_sensor.x - gyro_correction.gyro_offset_0[0]) * gyro_correction.gyro_scale_0[0];
+                    rates[1] = (gyro_sensor.y - gyro_correction.gyro_offset_0[1]) * gyro_correction.gyro_scale_0[1];
+                    rates[2] = (gyro_sensor.z - gyro_correction.gyro_offset_0[2]) * gyro_correction.gyro_scale_0[2];
+                }
+                else if (gyro_selected == 1) {
+                    rates[0] = (gyro_sensor.x - gyro_correction.gyro_offset_1[0]) * gyro_correction.gyro_scale_1[0];
+                    rates[1] = (gyro_sensor.y - gyro_correction.gyro_offset_1[1]) * gyro_correction.gyro_scale_1[1];
+                    rates[2] = (gyro_sensor.z - gyro_correction.gyro_offset_1[2]) * gyro_correction.gyro_scale_1[2];
+                }
+                // correct for in-run bias errors
+                rates[0] -= gyro_bias.gyro_x_bias;
+                rates[1] -= gyro_bias.gyro_y_bias;
+                rates[2] -= gyro_bias.gyro_z_bias;
+                
                 // Checking RC inputs
                 orb_copy(ORB_ID(rc_channels), rc_channels_sub, &rc_channels);
                 // printf("Input RC - %f, %f, %f, %f\t\t", (double)rc_channels.channels[1]*1000, (double)rc_channels.channels[2]*1000, (double)rc_channels.channels[3]*1000, (double)rc_channels.channels[0]*1000);
                 
-                control_right_stick(&att, &att_sp, &actuators, rc_channels.channels, rp_controller);
-                control_thrust(&att, &att_sp, &actuators, rc_channels.channels, y_controller);
+                control_right_stick(&att, &att_sp, &actuators, rc_channels.channels, rp_controller_select);
+                control_thrust(&att, &att_sp, &actuators, rc_channels.channels, yaw_controller_select);
+
+                // printf("%5.8f, %5.8f, %5.8f\n", (double)rates[0], (double)rates[1], (double)rates[2]);
 
                 // TODO: Throttle limit check.?
 
@@ -489,6 +737,8 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
 
                 // Publishing rates
                 orb_publish(ORB_ID(vehicle_rates_setpoint), rates_pub, &rates_sp);
+
+                // printf("Actuator outputs - %2.4f\t%2.4f\t%2.4f\t%2.4f\n", (double)actuators.control[0], (double)actuators.control[1], (double)actuators.control[2], (double)actuators.control[3]);
 
                 // Sanity check and publishing actuator outputs
                 if (PX4_ISFINITE(actuators.control[0]) && PX4_ISFINITE(actuators.control[1]) && PX4_ISFINITE(actuators.control[2]) && PX4_ISFINITE(actuators.control[3])) {

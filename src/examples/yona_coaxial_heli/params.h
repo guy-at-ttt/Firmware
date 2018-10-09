@@ -13,6 +13,8 @@ struct params {
     float thrust_p;
     float thrust_i;
     float thrust_d;
+    float alpha;
+    float time_diff;
 };
 
 struct param_handles {
@@ -28,4 +30,6 @@ struct param_handles {
     param_t thrust_p;
     param_t thrust_i;
     param_t thrust_d;
+    param_t alpha;
+    param_t time_diff;
 };
