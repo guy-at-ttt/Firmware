@@ -53,6 +53,8 @@
 #include <uORB/topics/sensor_combined.h>
 #include <uORB/topics/sensor_gyro.h>
 #include <uORB/topics/vehicle_attitude.h>
+#include <uORB/topics/vehicle_magnetometer.h>
+#include <uORB/topics/sensor_mag.h>
 
 __EXPORT int px4_simple_app_main(int argc, char *argv[]);
 
@@ -65,6 +67,8 @@ int px4_simple_app_main(int argc, char *argv[])
 
 	/* subscribe to sensor_combined topic */
 	int sensor_sub_fd = orb_subscribe(ORB_ID(sensor_combined));
+	int sensor_mag_sub = orb_subscribe(ORB_ID(sensor_mag));
+	int v_mag_sub = orb_subscribe(ORB_ID(vehicle_magnetometer));
 	int att_sub = orb_subscribe(ORB_ID(vehicle_attitude));
 	for (int s = 0; s <= _gyro_count; s++)
 		_sensor_gyro_sub[s] = orb_subscribe_multi(ORB_ID(sensor_gyro), s);
@@ -82,8 +86,11 @@ int px4_simple_app_main(int argc, char *argv[])
 	};
 
 	int error_counter = 0;
+	bool tmp = false;
 
 	for (int i = 0; i < 15; i++) {
+	// while (!tmp) {
+	// 	if (!strcmp(argv[1], "stop")) {
 		/* wait for sensor update of 1 file descriptor for 1000 ms (1 second) */
 		int poll_ret = px4_poll(fds, 3, 500);
 
@@ -107,9 +114,13 @@ int px4_simple_app_main(int argc, char *argv[])
 				/* obtained data for the first file descriptor */
 				struct sensor_combined_s raw;
 				struct vehicle_attitude_s att;
+				struct sensor_mag_s s_mag;
+				struct vehicle_magnetometer_s v_mag;
 				/* copy sensors raw data into local buffer */
 				orb_copy(ORB_ID(sensor_combined), sensor_sub_fd, &raw);
-				orb_copy(ORB_ID(vehicle_attitude), att_sub, &att);
+				orb_copy(ORB_ID(vehicle_attitude), att_sub, &att);	
+				orb_copy(ORB_ID(sensor_mag), sensor_mag_sub, &s_mag);
+				orb_copy(ORB_ID(vehicle_magnetometer), v_mag_sub, &v_mag);
 				struct sensor_gyro_s gyro_raw;
 				orb_copy(ORB_ID(sensor_gyro), _sensor_gyro_sub[0], &gyro_raw);
 				struct sensor_gyro_s gyro_rawone;
@@ -131,31 +142,49 @@ int px4_simple_app_main(int argc, char *argv[])
 				double siny_cosp = +2.0 * (double)(att.q[0] * att.q[3] + att.q[1] * att.q[2]);
 				double cosy_cosp = +1.0 - 2.0 * (double)(att.q[2] * att.q[2] + att.q[3] * att.q[3]);  
 				double yaw = atan2(siny_cosp, cosy_cosp);
-				
-				printf("\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\n",//\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\n",
-					 roll,
-					 pitch,
-					 yaw,
-					 (double)raw.gyro_rad[0],
-					 (double)raw.gyro_rad[1],
-					 (double)raw.gyro_rad[2],
-					 (double)gyro_raw.x,
-					 (double)gyro_raw.y,
-					 (double)gyro_raw.z,
-					 (double)gyro_raw.x_raw,
-					 (double)gyro_raw.y_raw,
-					 (double)gyro_raw.z_raw);
-					 //  (double)raw.accelerometer_m_s2[0],
-					//  (double)raw.accelerometer_m_s2[1],
-					//  (double)raw.accelerometer_m_s2[2],
-					//  (double)gyro_rawone.x,
-					//  (double)gyro_rawone.y,
-					//  (double)gyro_rawone.z,
-					//  (double)gyro_rawone.x_raw,
-					//  (double)gyro_rawone.y_raw,
-					//  (double)gyro_rawone.z_raw);
-			// }
+
+				if (tmp) {
+					printf("\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\n",//\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\n",
+						roll,
+						pitch,
+						yaw,
+						(double)att.rollspeed,
+						(double)att.pitchspeed,
+						(double)att.yawspeed,
+						(double)s_mag.x,
+						(double)s_mag.y,
+						(double)s_mag.z,
+						(double)v_mag.magnetometer_ga[0],
+						(double)v_mag.magnetometer_ga[1],
+						(double)v_mag.magnetometer_ga[2]);
+						//  (double)raw.accelerometer_m_s2[0],
+						//  (double)raw.accelerometer_m_s2[1],
+						//  (double)raw.accelerometer_m_s2[2],
+						//  (double)gyro_rawone.x,
+						//  (double)gyro_rawone.y,
+						//  (double)gyro_rawone.z,
+						//  (double)gyro_rawone.x_raw,
+						//  (double)gyro_rawone.y_raw,
+						//  (double)gyro_rawone.z_raw);
+				// }
+				}
+				else {
+					printf("\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\t%8.4f\n",
+						roll,
+						pitch,
+						yaw,
+						(double)att.rollspeed,
+						(double)att.pitchspeed,
+						(double)att.yawspeed,
+						(double)v_mag.magnetometer_ga[0],
+						(double)v_mag.magnetometer_ga[1],
+						(double)v_mag.magnetometer_ga[2]);
+				}
 		}
+		// }
+		// else {
+		// 	break;
+		// }
 	}
 
 	// PX4_INFO("exiting");
