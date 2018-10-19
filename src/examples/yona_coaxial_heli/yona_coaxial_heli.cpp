@@ -56,22 +56,31 @@
 #include <uORB/topics/sensor_gyro.h>
 #include <uORB/topics/sensor_correction.h>
 #include <uORB/topics/sensor_bias.h>
+#include <uORB/topics/vehicle_magnetometer.h>
+#include <uORB/topics/vehicle_air_data.h>
 
 #include <mathlib/math/Limits.hpp>
 #include <mathlib/math/Functions.hpp>
 
 # define MAX_GYRO_COUNT 3
+# define THRUST_MOVING_AVG_SPAN 10
 
 int init_parameters(struct param_handles *handle);
 int update_parameters(const struct param_handles *handle, struct params *parameters);
-void control_right_stick(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[], int yaw_controller_select, bool verbose);
-void control_thrust(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[], int yaw_controller_select, bool verbose);
+void control_right_stick(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[]);
+void control_yaw(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, const struct vehicle_magnetometer_s *mag, struct actuator_controls_s *actuators, float rc_channel_values[]);
+void control_thrust(const struct vehicle_air_data_s *air_data, struct actuator_controls_s *actuators, float rc_channel_values[]);
+float smoothen_baro(const struct vehicle_air_data_s *air_data);
 static void console_print(const char *reason);
 int yona_coaxial_heli_main_thread(int argc, char *argv[]);
 
 extern "C" __EXPORT int yona_coaxial_heli_main(int argc, char *argv[]);
 // __EXPORT int yona_coaxial_heli_main(int argc, char *argv[]);
 
+bool verbose = false;
+bool first_iteration_flag = false;
+bool yaw_sp_reset = false;
+int rp_controller_select = 0, yaw_controller_select = 0;
 
 static int deamon_task;
 static bool thread_should_exit = false;
@@ -86,9 +95,14 @@ int gyro_sub[MAX_GYRO_COUNT];
 float p_err = 0.0f, d_err = 0.0f, dt = 0.0f;
 float roll_err_acc = 0.0f, pitch_err_acc = 0.0f, yaw_err_acc = 0.0f;
 float roll_err_gyro = 0.0f, pitch_err_gyro = 0.0f, yaw_err_gyro = 0.0f;
-float last_roll_err = 0.0f, last_pitch_err = 0.0f, last_yaw_err = 0.0f;
+float yaw_err_mag = 0.0f, yaw_euler_sp = 0.0f, mag_sp[3] = {0.0f, 0.0f, 0.0f};
+float last_roll_err = 0.0f, last_pitch_err = 0.0f, last_yaw_err = 0.0f, last_thrust_err = 0.0f;
 
-hrt_abstime rp_curr_time, rp_prev_time, y_curr_time, y_prev_time, st_time;
+float thrust_sp_baro = 0.0f, thrust_err_baro = 0.0f, baro_smooth_val = 0.0f;
+int baro_smooth_idx = 0, tmp_thrust_counter = 0;
+float prev_baro[THRUST_MOVING_AVG_SPAN];
+
+hrt_abstime rp_curr_time, rp_prev_time, y_curr_time, y_prev_time, th_curr_time, th_prev_time, st_time;
 
 
 int init_parameters(struct param_handles *handle) {
@@ -109,11 +123,13 @@ int init_parameters(struct param_handles *handle) {
     handle->thrust_d = param_find("YONA_THRUST_D");
 
     handle->alpha = param_find("YONA_ALPHA");
+    handle->beta = param_find("YONA_BETA");
     handle->time_diff = param_find("YONA_TIME_DIFF");
 
     handle->roll_bias = param_find("YONA_ROLL_BIAS");
     handle->pitch_bias = param_find("YONA_PITCH_BIAS");
     handle->yaw_bias = param_find("YONA_YAW_BIAS");
+    handle->thrust_bias = param_find("YONA_THRUST_BIAS");
     return 0;
 }
 
@@ -136,15 +152,17 @@ int update_parameters(const struct param_handles *handle, struct params *paramet
     param_get(handle->thrust_d, &(parameters->thrust_d));
 
     param_get(handle->alpha, &(parameters->alpha));
+    param_get(handle->beta, &(parameters->beta));
     param_get(handle->time_diff, &(parameters->time_diff));
 
     param_get(handle->roll_bias, &(parameters->roll_bias));
     param_get(handle->pitch_bias, &(parameters->pitch_bias));
     param_get(handle->yaw_bias, &(parameters->yaw_bias));
+    param_get(handle->thrust_bias, &(parameters->thrust_bias));
     return 0;
 }
 
-void control_right_stick(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[], int rp_controller_select, bool verbose) {
+void control_right_stick(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[]) {
     // Control Roll and Pitch
     if (rp_controller_select == 0) {
         // Setting ROLL and PITCH to RC input values
@@ -260,7 +278,16 @@ void control_right_stick(const struct vehicle_attitude_s *att, const struct vehi
     // last_pitch_err = pitch_err_acc;
 }
 
-void control_thrust(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[], int yaw_controller_select, bool verbose) {
+void control_yaw(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, const struct vehicle_magnetometer_s *mag, struct actuator_controls_s *actuators, float rc_channel_values[]) {
+    if (first_iteration_flag) {
+        printf("Resetting YAW Setpoint\n");
+        yaw_euler_sp = matrix::Eulerf(matrix::Quatf(att->q)).psi();
+        mag_sp[0] = mag->magnetometer_ga[0];
+        mag_sp[1] = mag->magnetometer_ga[1];
+        mag_sp[2] = mag->magnetometer_ga[2];
+        first_iteration_flag = false;
+    }
+    
     // YAW
     if (yaw_controller_select == 0) {
         // Radio input
@@ -270,7 +297,7 @@ void control_thrust(const struct vehicle_attitude_s *att, const struct vehicle_a
     else if (yaw_controller_select == 1) {
         // PD - accelerometer as Proportional
         //      gyro as Derivative
-        yaw_err_acc = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).psi() - matrix::Eulerf(matrix::Quatf(att->q)).psi();
+        yaw_err_acc = yaw_euler_sp - matrix::Eulerf(matrix::Quatf(att->q)).psi();
         yaw_err_gyro = att_sp->yaw_body - att->yawspeed;
 
         y_curr_time = hrt_absolute_time();
@@ -291,8 +318,9 @@ void control_thrust(const struct vehicle_attitude_s *att, const struct vehicle_a
 
     else if (yaw_controller_select == 2) {
         // PD - accelerometer and gyro - Complementary Filter
-        yaw_err_acc = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).psi() - matrix::Eulerf(matrix::Quatf(att->q)).psi();
+        yaw_err_acc = yaw_euler_sp - matrix::Eulerf(matrix::Quatf(att->q)).psi();
         yaw_err_gyro = att_sp->yaw_body - att->yawspeed;
+        yaw_err_mag = atan2f(-1 * mag_sp[1], mag_sp[0]) - atan2f(-1 * mag->magnetometer_ga[1], mag->magnetometer_ga[0]);
 
         y_curr_time = hrt_absolute_time();
         dt = (y_curr_time - y_prev_time)/1000000;         // dt in seconds        // TODO: Check
@@ -301,7 +329,7 @@ void control_thrust(const struct vehicle_attitude_s *att, const struct vehicle_a
         if (dt > 0.02f)
             dt = 0.02f;
 
-        p_err = (pp.alpha * yaw_err_gyro * dt) + ((1 - pp.alpha) * yaw_err_acc);
+        p_err = (pp.alpha * yaw_err_gyro * dt) + ((1 - pp.alpha) * (((1 - pp.beta) * yaw_err_acc) + (pp.beta * yaw_err_mag)));
         d_err = (p_err - last_yaw_err) / dt;
         actuators->control[2] = (p_err * pp.yaw_p) + (d_err * pp.yaw_d) + (pp.yaw_bias * rc_channel_values[3]);            // YAW
         
@@ -311,7 +339,7 @@ void control_thrust(const struct vehicle_attitude_s *att, const struct vehicle_a
 
     else if (yaw_controller_select == 3) {
         // PD - accelerometer only
-        yaw_err_acc = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).psi() - matrix::Eulerf(matrix::Quatf(att->q)).psi();
+        yaw_err_acc = yaw_euler_sp - matrix::Eulerf(matrix::Quatf(att->q)).psi();
 
         y_curr_time = hrt_absolute_time();
         dt = (y_curr_time - y_prev_time)/1000000;         // dt in seconds        // TODO: Check
@@ -331,10 +359,58 @@ void control_thrust(const struct vehicle_attitude_s *att, const struct vehicle_a
     else {
         warnx("Invalid Yaw Controller");
     }
-    
+}
+
+float smoothen_baro(const struct vehicle_air_data_s *air_data) {
+    float sum = 0.0f, avg = 0.0f;
+    if (baro_smooth_idx >= THRUST_MOVING_AVG_SPAN)
+        baro_smooth_idx %= THRUST_MOVING_AVG_SPAN;
+    prev_baro[baro_smooth_idx] = air_data->baro_alt_meter;
+
+    for (int i=0; i < THRUST_MOVING_AVG_SPAN; i++)
+        sum += prev_baro[i];
+    avg = (float)(sum / THRUST_MOVING_AVG_SPAN);
+    baro_smooth_idx++;
+    return avg;
+}
+
+void control_thrust(const struct vehicle_air_data_s *air_data, struct actuator_controls_s *actuators, float rc_channel_values[]) {
     // THRUST
-    actuators->control[3] = rc_channel_values[0];
-    
+    // printf("%d\n", (int)rc_channel_values[7]);
+    baro_smooth_val = smoothen_baro(air_data);
+
+    if (tmp_thrust_counter <= THRUST_MOVING_AVG_SPAN) {
+        actuators->control[3] = rc_channel_values[0];
+        tmp_thrust_counter++;
+    }
+    else {
+        if ((int)rc_channel_values[7] < 0) {
+            actuators->control[3] = rc_channel_values[0];       // Manual Control
+        }
+        else if ((int)rc_channel_values[7] == 0) {
+            // Partial control
+            thrust_sp_baro = baro_smooth_val;
+            actuators->control[3] = rc_channel_values[0];       // Manual Control
+        }
+        else {
+            // Altitude hold
+            thrust_err_baro = thrust_sp_baro - baro_smooth_val;
+
+            th_curr_time = hrt_absolute_time();
+            dt = (th_curr_time - th_prev_time)/10e6;
+            if (dt < 0.002f)
+                dt = 0.002f;
+            if (dt > 0.02f)
+                dt = 0.02f;
+
+            p_err = thrust_err_baro;
+            d_err = (thrust_err_baro - last_thrust_err) / dt;
+            actuators->control[3] = (p_err * pp.thrust_p) + (d_err * pp.thrust_d) + (pp.thrust_bias * (rc_channel_values[0] - 0.5f);            // THRUST
+
+            th_prev_time = hrt_absolute_time();
+            last_thrust_err = thrust_err_baro;
+        }
+    }
     actuators->timestamp = hrt_absolute_time();
     // printf("%5.4f, %5.4f, %5.4f\t\t%5.4f, %5.4f, %5.4f\n",
     //                     (double)matrix::Eulerf(matrix::Quatf(att->q)).phi(),
@@ -353,12 +429,11 @@ static void console_print(const char *reason) {
 int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
     // Main thread
     /* ------ Reading arguments ------ */
-	bool verbose = false;
+	verbose = false;
     // bool rp_controller = false;
     // bool y_controller = false;
-    float alpha = 0.02f, time_diff = 0.1f;
-    int rp_controller_select = 0, yaw_controller_select = 0;
-    bool tune_alpha = false;
+    float alpha = 0.02f, beta = 0.0f, time_diff = 0.1f;
+    bool tune_alpha = false, tune_beta = false;
     bool tune_timediff = false;
     bool tune_params = false;
     // bool tune_flags[6] = {false, false, false, false, false, false};
@@ -368,6 +443,7 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
     float tmp_roll[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     float tmp_pitch[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     float tmp_yaw[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float tmp_thrust[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -458,11 +534,28 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
                         tune_alpha = true;
                         alpha = atof(argv[i+3]);
                         printf("\tChanging complimentary filter coefficient ALPHA to: %2.3f\n", (double)alpha);
+
+                        tune_beta = true;
+                        beta = 0.02f;
+                        printf("\tdefault BETA to: %2.3f\n", (double)beta);
+                    }
+                    else if (!strcmp(argv[i+2], "beta") || !strcmp(argv[i+2], "b")) {
+                        tune_alpha = true;
+                        alpha = 0.02f;
+                        printf("\tdefault ALPHA to: %2.3f\n", (double)alpha);
+
+                        tune_beta = true;
+                        beta = atof(argv[i+3]);
+                        printf("\tChanging complimentary filter coefficient BETA to: %2.3f\n", (double)beta);
                     }
                     else {
                         tune_alpha = true;
                         alpha = 0.02f;
                         printf("\tdefault ALPHA to: %2.3f\n", (double)alpha);
+
+                        tune_beta = true;
+                        beta = 0.02f;
+                        printf("\tdefault BETA to: %2.3f\n", (double)beta);
                     }
                 }
                 else if (!strcmp(argv[i+1], "accpd") || !strcmp(argv[i+1], "3")) {
@@ -544,6 +637,27 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
                     printf("\tChanging Yaw RC input Bias (yb) value to: %2.3f\n", (double)tmp_yaw[3]);
                 }
                 
+                else if (strcmp(argv[i+1], "tp") == 0) {
+                    tune_flags[12] = true;
+                    tmp_thrust[0] = atof(argv[i+2]);
+                    printf("\tChanging Thrust Proportional Gain (tp) value to: %2.3f\n", (double)tmp_thrust[0]);
+                }
+                else if (strcmp(argv[i+1], "ti") == 0) {
+                    tune_flags[13] = true;
+                    tmp_thrust[1] = atof(argv[i+2]);
+                    printf("\tChanging Thrust Integral Gain (ti) value to: %2.3f\n", (double)tmp_thrust[1]);
+                }
+                else if (strcmp(argv[i+1], "td") == 0) {
+                    tune_flags[14] = true;
+                    tmp_thrust[2] = atof(argv[i+2]);
+                    printf("\tChanging Thrust Derivative Gain (td) value to: %2.3f\n", (double)tmp_thrust[2]);
+                }
+                else if (strcmp(argv[i+1], "tb") == 0) {
+                    tune_flags[15] = true;
+                    tmp_thrust[3] = atof(argv[i+2]);
+                    printf("\tChanging Thrust RC input Bias (tb) value to: %2.3f\n", (double)tmp_thrust[3]);
+                }
+                
                 else
                     fprintf(stderr, "Usage: yona_coaxial_heli start -t <parameter> <value>\n\n\tparameters:\n\t\trp\tRoll Proportional Gain\n\t\tpp\tPitch Proportional Gain\n\n\tvalues:\n\t\trp\tmin:0, max:12.00\n\t\tpp\tmin:0, max:12.00\n\n");
             }
@@ -586,10 +700,21 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
             param_set(ph.yaw_d, (const void*)&tmp_yaw[2]);
         if (tune_flags[11])
             param_set(ph.yaw_bias, (const void*)&tmp_yaw[3]);
+        
+        if (tune_flags[12])
+            param_set(ph.thrust_p, (const void*)&tmp_thrust[0]);
+        if (tune_flags[13])
+            param_set(ph.thrust_i, (const void*)&tmp_thrust[1]);
+        if (tune_flags[14])
+            param_set(ph.thrust_d, (const void*)&tmp_thrust[2]);
+        if (tune_flags[15])
+            param_set(ph.thrust_bias, (const void*)&tmp_thrust[3]);
     }
 
     if (tune_alpha)
         param_set(ph.alpha, (const void*)&alpha);
+    if (tune_beta)
+        param_set(ph.beta, (const void*)&beta);
     if (tune_timediff)
         param_set(ph.time_diff, (const void*)&time_diff);
     
@@ -599,7 +724,7 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
     }
 
     update_parameters(&ph, &pp);
-    printf("GAINS:\n\troll p: %2.3f\n\troll i: %2.3f\n\troll d: %2.3f\n\troll bias: %2.3f\n\n\tpitch p: %2.3f\n\tpitch i: %2.3f\n\tpitch d: %2.3f\n\tpitch bias: %2.3f\n\n\tyaw p: %2.3f\n\tyaw i: %2.3f\n\tyaw d: %2.3f\n\tyaw bias: %2.3f\n\n\talpha (complementary filter): %2.3f\n\ttime_diff: %2.3f\n", (double)pp.roll_p, (double)pp.roll_i, (double)pp.roll_d, (double)pp.roll_bias, (double)pp.pitch_p, (double)pp.pitch_i, (double)pp.pitch_d, (double)pp.pitch_bias, (double)pp.yaw_p, (double)pp.yaw_i, (double)pp.yaw_d, (double)pp.yaw_bias, (double)pp.alpha, (double)pp.time_diff);
+    printf("GAINS:\n\troll p: %2.3f\n\troll i: %2.3f\n\troll d: %2.3f\n\troll bias: %2.3f\n\n\tpitch p: %2.3f\n\tpitch i: %2.3f\n\tpitch d: %2.3f\n\tpitch bias: %2.3f\n\n\tyaw p: %2.3f\n\tyaw i: %2.3f\n\tyaw d: %2.3f\n\tyaw bias: %2.3f\n\n\tthrust p: %2.3f\n\tthrust i: %2.3f\n\tthrust d: %2.3f\n\tthrust bias: %2.3f\n\n\talpha (complementary filter GYRO): %2.3f\n\tbeta (complementary filter MAGNETOMETER): %2.3f\n\ttime_diff: %2.3f\n", (double)pp.roll_p, (double)pp.roll_i, (double)pp.roll_d, (double)pp.roll_bias, (double)pp.pitch_p, (double)pp.pitch_i, (double)pp.pitch_d, (double)pp.pitch_bias, (double)pp.yaw_p, (double)pp.yaw_i, (double)pp.yaw_d, (double)pp.yaw_bias, (double)pp.thrust_p, (double)pp.thrust_i, (double)pp.thrust_d, (double)pp.thrust_bias, (double)pp.alpha, (double)pp.beta, (double)pp.time_diff);
 
 
     struct vehicle_attitude_s           att;
@@ -613,6 +738,8 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
 	struct sensor_gyro_s			    gyro_sensor;           // gyro data before thermal correctons and ekf bias estimates are applied
 	struct sensor_correction_s		    gyro_correction;    // sensor thermal corrections
 	struct sensor_bias_s			    gyro_bias;          // sensor in-run bias corrections
+    struct vehicle_magnetometer_s       mag;
+    struct vehicle_air_data_s           air_data;
 
     
     memset(&att, 0, sizeof(att));
@@ -625,12 +752,13 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
     memset(&rc_channels, 0, sizeof(rc_channels));
     memset(&gyro_sensor, 0, sizeof(gyro_sensor));
     memset(&gyro_correction, 0, sizeof(gyro_correction));
-    
+    memset(&mag, 0, sizeof(mag));
+    memset(&air_data, 0, sizeof(air_data));
 
-    // /* ------ Arming ------ */
-    // // TODO: Change to a button trigger
-	// struct actuator_armed_s arm;
-	// memset(&arm, 0, sizeof(arm));
+    /* ------ Arming ------ */
+    // TODO: Change to a button trigger
+	struct actuator_armed_s arm;
+	memset(&arm, 0, sizeof(arm));
 
 	// arm.timestamp = hrt_absolute_time();
 	// arm.ready_to_arm = true;
@@ -638,15 +766,14 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
 	// orb_advert_t arm_pub_ptr = orb_advertise(ORB_ID(actuator_armed), &arm);
 	// orb_publish(ORB_ID(actuator_armed), arm_pub_ptr, &arm);
 
-	// /* read back values to validate */
+	/* read back values to validate */
 	// int arm_sub_fd = orb_subscribe(ORB_ID(actuator_armed));
 	// orb_copy(ORB_ID(actuator_armed), arm_sub_fd, &arm);
 
 	// if (arm.ready_to_arm && arm.armed) {
-	// 	warnx("Actuator armed");
-
+	// 	warnx("Actuators Armed");
 	// } else {
-	// 	errx(1, "Arming actuators failed");
+	// 	warnx("Actuators Not Armed");
 	// }
 
 
@@ -675,6 +802,9 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
     int global_sp_sub = orb_subscribe(ORB_ID(position_setpoint_triplet));
     int param_sub = orb_subscribe(ORB_ID(parameter_update));
     int rc_channels_sub = orb_subscribe(ORB_ID(rc_channels));
+    int arm_sub_fd = orb_subscribe(ORB_ID(actuator_armed));
+    int mag_sub = orb_subscribe(ORB_ID(vehicle_magnetometer));
+    int air_data_sub = orb_subscribe(ORB_ID(vehicle_air_data));
 
 	gyro_count = math::min(orb_group_count(ORB_ID(sensor_gyro)), MAX_GYRO_COUNT);
 	if (gyro_count == 0)
@@ -689,6 +819,10 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
     rp_prev_time = st_time;
     y_prev_time = st_time;
 
+    
+    for (int i=0; i<THRUST_MOVING_AVG_SPAN; i++)
+        prev_baro[i] = 0.0f;
+
 
     struct pollfd fds[2] = {};
     fds[0].fd = param_sub;          // Descriptor being polled
@@ -702,6 +836,19 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
         //              timeout (in ms)
         // Returns : number of structures that have non-zero revents fields.
         //           0; if times out waiting for a "descriptor ready"
+
+        orb_copy(ORB_ID(actuator_armed), arm_sub_fd, &arm);
+        // first_iteration_flag = arm.armed ? true : false;
+        if (arm.armed && yaw_sp_reset) {
+            // warnx("Actuators Armed");
+            first_iteration_flag = true;
+            yaw_sp_reset = false;
+        }
+        if (!arm.armed) {
+            // warnx("Actuators Not Armed");
+            yaw_sp_reset = true;
+        }
+        
         int poll_ret_val = poll(fds, 2, 500);
 
         if (poll_ret_val < 0) {
@@ -740,6 +887,8 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
                 
                 // Creating a local copy
                 orb_copy(ORB_ID(vehicle_attitude), att_sub, &att);
+                orb_copy(ORB_ID(vehicle_magnetometer), mag_sub, &mag);
+                orb_copy(ORB_ID(vehicle_air_data), air_data_sub, &air_data);
                 if (att_sp_updated)
                     orb_copy(ORB_ID(vehicle_attitude_setpoint), att_sp_sub, &att_sp);
                 
@@ -776,8 +925,9 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
                 orb_copy(ORB_ID(rc_channels), rc_channels_sub, &rc_channels);
                 // printf("Input RC - %f, %f, %f, %f\t\t", (double)rc_channels.channels[1]*1000, (double)rc_channels.channels[2]*1000, (double)rc_channels.channels[3]*1000, (double)rc_channels.channels[0]*1000);
                 
-                control_right_stick(&att, &att_sp, &actuators, rc_channels.channels, rp_controller_select, verbose);
-                control_thrust(&att, &att_sp, &actuators, rc_channels.channels, yaw_controller_select, verbose);
+                control_right_stick(&att, &att_sp, &actuators, rc_channels.channels);
+                control_yaw(&att, &att_sp, &mag, &actuators, rc_channels.channels);
+                control_thrust(&air_data, &actuators, rc_channels.channels);
 
                 // printf("%5.8f, %5.8f, %5.8f\n", (double)rates[0], (double)rates[1], (double)rates[2]);
 
@@ -866,9 +1016,8 @@ int yona_coaxial_heli_main(int argc, char *argv[]) {
 }
 
 
-// Check pre-flight checklist
 // Check disarm time delay (mRo arms at non-min throttle after disarming < 4 sec)
-// Change the controller for roll and pitch
-// Add controller for yaw
 // Add function in init.d file on mRo - Test
 // Add position hold mode (built in function <uses GPS.?> __OR__ radio switch toggle.?)
+// Estimator for position based on accelerometer readings
+// PID for position hold - input position and/or velocity - output velocity ---- x and y linear velocity <directly proportional to> roll and pitch angles

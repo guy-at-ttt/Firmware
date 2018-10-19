@@ -14,10 +14,12 @@ struct params {
     float thrust_i;
     float thrust_d;
     float alpha;
+    float beta;
     float time_diff;
     float roll_bias;
     float pitch_bias;
     float yaw_bias;
+    float thrust_bias;
 };
 
 struct param_handles {
@@ -34,8 +36,10 @@ struct param_handles {
     param_t thrust_i;
     param_t thrust_d;
     param_t alpha;
+    param_t beta;
     param_t time_diff;
     param_t roll_bias;
     param_t pitch_bias;
     param_t yaw_bias;
+    param_t thrust_bias;
 };
