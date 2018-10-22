@@ -81,6 +81,7 @@ bool verbose = false;
 bool first_iteration_flag = false;
 bool yaw_sp_reset = false;
 int rp_controller_select = 0, yaw_controller_select = 0;
+bool rc_input_val_reset = true;
 
 static int deamon_task;
 static bool thread_should_exit = false;
@@ -92,6 +93,7 @@ int gyro_count = 0;
 int gyro_selected = 0;
 int gyro_sub[MAX_GYRO_COUNT];
 
+float rc_input_val = 0.0f;
 float p_err = 0.0f, d_err = 0.0f, dt = 0.0f;
 float roll_err_acc = 0.0f, pitch_err_acc = 0.0f, yaw_err_acc = 0.0f;
 float roll_err_gyro = 0.0f, pitch_err_gyro = 0.0f, yaw_err_gyro = 0.0f;
@@ -206,8 +208,8 @@ void control_right_stick(const struct vehicle_attitude_s *att, const struct vehi
 
         roll_err_gyro = att_sp->roll_body - att->rollspeed;
         pitch_err_gyro = att_sp->pitch_body - att->pitchspeed;
-        if (verbose)
-            printf("Pitch_gyro_err: %3.4f\t\t", (double)pitch_err_gyro);
+        // if (verbose)
+        //     printf("Pitch_gyro_err: %3.4f\t\t", (double)pitch_err_gyro);
 
         rp_curr_time = hrt_absolute_time();
         dt = (rp_curr_time - rp_prev_time)/1000000;         // dt in seconds        // TODO: Check
@@ -222,22 +224,22 @@ void control_right_stick(const struct vehicle_attitude_s *att, const struct vehi
         // float tmp_rp = p_err * pp.roll_p;
         // float tmp_rd = d_err * pp.roll_d;
         // float tmp_rb = rc_channel_values[1] * pp.roll_bias;
-        if (verbose) {
+        // if (verbose) {
             // printf("Roll P_err: %3.4f,    D_err: %3.4f\t\t", (double)p_err, (double)d_err);
             // printf("Roll P: %3.4f,    D: %3.4f,     Bias: %3.4f\t\t", (double)tmp_rp, (double)tmp_rd, (double)tmp_rb);
-        }
+        // }
         last_roll_err = p_err;
         
         p_err = (pp.alpha * pitch_err_gyro * dt) + ((1.0f - pp.alpha) * pitch_err_acc);
         d_err = (p_err - last_pitch_err) / dt;
-        if (verbose) {
-            printf("Pitch P_err: %3.4f,    D_err: %3.4f,    dt: %.9f,     last_p_err: %3.4f\t\t", (double)p_err, (double)d_err, (double)dt, (double)last_pitch_err);
-            // printf("Roll P: %3.4f,    D: %3.4f,     Bias: %3.4f\t\t", (double)tmp_rp, (double)tmp_rd, (double)tmp_rb);
-        }
+        // if (verbose) {
+        //     printf("Pitch P_err: %3.4f,    D_err: %3.4f,    dt: %.9f,     last_p_err: %3.4f\t\t", (double)p_err, (double)d_err, (double)dt, (double)last_pitch_err);
+        //     // printf("Roll P: %3.4f,    D: %3.4f,     Bias: %3.4f\t\t", (double)tmp_rp, (double)tmp_rd, (double)tmp_rb);
+        // }
         last_pitch_err = p_err;
         actuators->control[1] = (-1 * p_err * pp.pitch_p) + (-1 * d_err * pp.pitch_d) + (pp.pitch_bias * rc_channel_values[2]);              // PITCH
-        if (verbose)
-            printf("actuator: %3.4f\n", (double)actuators->control[1]);
+        // if (verbose)
+        //     printf("actuator: %3.4f\n", (double)actuators->control[1]);
 
         rp_prev_time = hrt_absolute_time();
     }
@@ -339,6 +341,7 @@ void control_yaw(const struct vehicle_attitude_s *att, const struct vehicle_atti
 
     else if (yaw_controller_select == 3) {
         // PD - accelerometer only
+        way_euler_sp = pp.yaw_bias * rc_channel_values[3];
         yaw_err_acc = yaw_euler_sp - matrix::Eulerf(matrix::Quatf(att->q)).psi();
 
         y_curr_time = hrt_absolute_time();
@@ -350,7 +353,7 @@ void control_yaw(const struct vehicle_attitude_s *att, const struct vehicle_atti
         
         p_err = yaw_err_acc;
         d_err = (yaw_err_acc - last_yaw_err) / dt;
-        actuators->control[2] = (p_err * pp.yaw_p) + (d_err * pp.yaw_d) + (pp.yaw_bias * rc_channel_values[3]);            // YAW
+        actuators->control[2] = (p_err * pp.yaw_p) + (d_err * pp.yaw_d);// + (pp.yaw_bias * rc_channel_values[3]);            // YAW
         
         y_prev_time = hrt_absolute_time();
         last_yaw_err = yaw_err_acc;
@@ -377,23 +380,30 @@ float smoothen_baro(const struct vehicle_air_data_s *air_data) {
 void control_thrust(const struct vehicle_air_data_s *air_data, struct actuator_controls_s *actuators, float rc_channel_values[]) {
     // THRUST
     // printf("%d\n", (int)rc_channel_values[7]);
+    if (rc_input_val_reset)
+       rc_input_val = rc_channel_values[0];
     baro_smooth_val = smoothen_baro(air_data);
 
     if (tmp_thrust_counter <= THRUST_MOVING_AVG_SPAN) {
         actuators->control[3] = rc_channel_values[0];
+        rc_input_val_reset = true;
         tmp_thrust_counter++;
     }
     else {
         if ((int)rc_channel_values[7] < 0) {
+            rc_input_val_reset = true;
             actuators->control[3] = rc_channel_values[0];       // Manual Control
+            rc_input_val = rc_channel_values[0];
         }
         else if ((int)rc_channel_values[7] == 0) {
-            // Partial control
+            // Hold the throttle percentage from RC input
             thrust_sp_baro = baro_smooth_val;
-            actuators->control[3] = rc_channel_values[0];       // Manual Control
+            rc_input_val_reset = false;
+            actuators->control[3] = rc_input_val;
         }
         else {
             // Altitude hold
+            rc_input_val_reset = false;
             thrust_err_baro = thrust_sp_baro - baro_smooth_val;
 
             th_curr_time = hrt_absolute_time();
@@ -405,7 +415,10 @@ void control_thrust(const struct vehicle_air_data_s *air_data, struct actuator_c
 
             p_err = thrust_err_baro;
             d_err = (thrust_err_baro - last_thrust_err) / dt;
-            actuators->control[3] = (p_err * pp.thrust_p) + (d_err * pp.thrust_d) + (pp.thrust_bias * (rc_channel_values[0] - 0.5f);            // THRUST
+            actuators->control[3] = rc_input_val + (p_err * pp.thrust_p) + (d_err * pp.thrust_d) + (pp.thrust_bias * (rc_channel_values[0] - 0.5f));            // THRUST
+
+            if (verbose)
+                printf("Thrust:\t%3.4f\t%3.4f\t%3.4f\n", (double)p_err, (double)d_err, (double)actuators->control[3]);
 
             th_prev_time = hrt_absolute_time();
             last_thrust_err = thrust_err_baro;
