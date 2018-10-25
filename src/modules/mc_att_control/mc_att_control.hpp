@@ -32,7 +32,7 @@
  ****************************************************************************/
 
 #include <lib/mixer/mixer.h>
-#include <mathlib/math/filter/LowPassFilter2p.hpp>
+#include <mathlib/math/filter/LowPassFilter2pVector3f.hpp>
 #include <matrix/matrix/math.hpp>
 #include <perf/perf_counter.h>
 #include <px4_config.h>
@@ -169,7 +169,7 @@ private:
 
 	perf_counter_t	_loop_perf;			/**< loop performance counter */
 
-	math::LowPassFilter2p _lp_filters_d[3];                      /**< low-pass filters for D-term (roll, pitch & yaw) */
+	math::LowPassFilter2pVector3f _lp_filters_d{initial_update_rate_hz, 50.f};	/**< low-pass filters for D-term (roll, pitch & yaw) */
 	static constexpr const float initial_update_rate_hz = 250.f; /**< loop update rate used for initialization */
 	float _loop_update_rate_hz{initial_update_rate_hz};          /**< current rate-controller loop update rate in [Hz] */
 
@@ -234,9 +234,7 @@ private:
 
 		(ParamFloat<px4::params::SENS_BOARD_X_OFF>) _board_offset_x,
 		(ParamFloat<px4::params::SENS_BOARD_Y_OFF>) _board_offset_y,
-		(ParamFloat<px4::params::SENS_BOARD_Z_OFF>) _board_offset_z,
-
-		(ParamFloat<px4::params::VT_WV_YAWR_SCL>) _vtol_wv_yaw_rate_scale		/**< Scale value [0, 1] for yaw rate setpoint  */
+		(ParamFloat<px4::params::SENS_BOARD_Z_OFF>) _board_offset_z
 	)
 
 	matrix::Vector3f _attitude_p;		/**< P gain for attitude control */
