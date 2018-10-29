@@ -20,6 +20,10 @@ struct params {
     float pitch_bias;
     float yaw_bias;
     float thrust_bias;
+    float yaw_i_min;
+    float yaw_i_max;
+    float thr_i_min;
+    float thr_i_max;
 };
 
 struct param_handles {
@@ -42,4 +46,8 @@ struct param_handles {
     param_t pitch_bias;
     param_t yaw_bias;
     param_t thrust_bias;
+    param_t yaw_i_min;
+    param_t yaw_i_max;
+    param_t thr_i_min;
+    param_t thr_i_max;
 };
