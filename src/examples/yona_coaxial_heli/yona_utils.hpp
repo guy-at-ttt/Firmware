@@ -48,6 +48,10 @@ int init_parameters(struct param_handles *handle) {
     handle->yaw_i_max = param_find("YONA_YAW_I_MAX");
     handle->thr_i_min = param_find("YONA_THR_I_MIN");
     handle->thr_i_max = param_find("YONA_THR_I_MAX");
+
+    handle->invert_roll = param_find("YONA_INV_ROLL");
+    handle->invert_pitch = param_find("YONA_INV_PITCH");
+    handle->invert_yaw = param_find("YONA_INV_YAW");
     return 0;
 }
 
@@ -82,6 +86,10 @@ int update_parameters(const struct param_handles *handle, struct params *paramet
     param_get(handle->yaw_i_max, &(parameters->yaw_i_max));
     param_get(handle->thr_i_min, &(parameters->yaw_i_min));
     param_get(handle->thr_i_max, &(parameters->yaw_i_max));
+
+    param_get(handle->invert_roll, &(parameters->invert_roll));
+    param_get(handle->invert_pitch, &(parameters->invert_pitch));
+    param_get(handle->invert_yaw, &(parameters->invert_yaw));
     return 0;
 }
 
@@ -100,14 +108,15 @@ void parse_arguments(int argc, char *argv[]) {
     bool tune_timediff = false;
     bool tune_params = false;
     // bool tune_flags[6] = {false, false, false, false, false, false};
-    bool tune_flags[20] = {};
-    for (int i = 0; i < 20; i++)
+    bool tune_flags[23] = {};
+    for (int i = 0; i < 23; i++)
         tune_flags[i] = false;
     float tmp_roll[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     float tmp_pitch[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     float tmp_yaw[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     float tmp_thrust[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     float tmp_i[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    int tmp_invert[3] = {1, 1, 1};
     
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -343,6 +352,34 @@ void parse_arguments(int argc, char *argv[]) {
                     printf("\tChanging Thrust Integral Max value to: %2.3f\n", (double)tmp_i[3]);
                 }
                 
+                else if (strcmp(argv[i+1], "invr") == 0) {
+                    tune_flags[20] = true;
+                    tmp_invert[0] = atoi(argv[i+2]);
+                    if (tmp_invert[0] < 0)
+                        tmp_invert[0] = -1;
+                    else
+                        tmp_invert[0] = 1;
+                    printf("\tInverting Roll value: %d\n", tmp_invert[0]);
+                }
+                else if (strcmp(argv[i+1], "invp") == 0) {
+                    tune_flags[21] = true;
+                    tmp_invert[1] = atoi(argv[i+2]);
+                    if (tmp_invert[1] < 0)
+                        tmp_invert[1] = -1;
+                    else
+                        tmp_invert[1] = 1;
+                    printf("\tInverting Pitch value: %d\n", tmp_invert[1]);
+                }
+                else if (strcmp(argv[i+1], "invy") == 0) {
+                    tune_flags[22] = true;
+                    tmp_invert[2] = atoi(argv[i+2]);
+                    if (tmp_invert[2] < 0)
+                        tmp_invert[2] = -1;
+                    else
+                        tmp_invert[2] = 1;
+                    printf("\tInverting Yaw value: %d\n", tmp_invert[2]);
+                }
+                
                 else
                     fprintf(stderr, "Usage: yona_coaxial_heli start -t <parameter> <value>\n\n\tparameters:\n\t\trp\tRoll Proportional Gain\n\t\tpp\tPitch Proportional Gain\n\n\tvalues:\n\t\trp\tmin:0, max:12.00\n\t\tpp\tmin:0, max:12.00\n\n");
             }
@@ -395,14 +432,21 @@ void parse_arguments(int argc, char *argv[]) {
         if (tune_flags[15])
             param_set(ph.thrust_bias, (const void*)&tmp_thrust[3]);
         
-        if (tune_flags[12])
+        if (tune_flags[16])
             param_set(ph.yaw_i_min, (const void*)&tmp_i[0]);
-        if (tune_flags[13])
+        if (tune_flags[17])
             param_set(ph.yaw_i_max, (const void*)&tmp_i[1]);
-        if (tune_flags[14])
+        if (tune_flags[18])
             param_set(ph.thr_i_min, (const void*)&tmp_i[2]);
-        if (tune_flags[15])
+        if (tune_flags[19])
             param_set(ph.thr_i_max, (const void*)&tmp_i[3]);
+
+        if (tune_flags[20])
+            param_set(ph.invert_roll, (const void*)&tmp_invert[0]);
+        if (tune_flags[21])
+            param_set(ph.invert_pitch, (const void*)&tmp_invert[1]);
+        if (tune_flags[22])
+            param_set(ph.invert_yaw, (const void*)&tmp_invert[2]);
     }
 
     if (tune_alpha)

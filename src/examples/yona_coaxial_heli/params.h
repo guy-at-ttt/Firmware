@@ -24,6 +24,9 @@ struct params {
     float yaw_i_max;
     float thr_i_min;
     float thr_i_max;
+    int invert_roll;
+    int invert_pitch;
+    int invert_yaw;
 };
 
 struct param_handles {
@@ -50,4 +53,7 @@ struct param_handles {
     param_t yaw_i_max;
     param_t thr_i_min;
     param_t thr_i_max;
+    param_t invert_roll;
+    param_t invert_pitch;
+    param_t invert_yaw;
 };

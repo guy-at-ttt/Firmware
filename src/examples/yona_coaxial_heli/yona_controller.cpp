@@ -27,8 +27,10 @@ void control_right_stick(const struct vehicle_attitude_s *att, const struct vehi
         
         // Calculating (euler-quat) error and applying P-Gain - accelerometer
         // Roll, Pitch, Yaw -> phi, theta, psi
-        roll_err_acc = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).phi() - matrix::Eulerf(matrix::Quatf(att->q)).phi();
-        pitch_err_acc = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).theta() - matrix::Eulerf(matrix::Quatf(att->q)).theta();
+        // roll_err_acc = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).phi() - matrix::Eulerf(matrix::Quatf(att->q)).phi();
+        // pitch_err_acc = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).theta() - matrix::Eulerf(matrix::Quatf(att->q)).theta();
+        roll_err_acc = (matrix::Eulerf(matrix::Quatf(att_sp->q_d)).phi() + (pp.roll_bias * rc_channel_values[1])) - matrix::Eulerf(matrix::Quatf(att->q)).phi();
+        pitch_err_acc = (matrix::Eulerf(matrix::Quatf(att_sp->q_d)).theta() + (-1 * pp.pitch_bias * rc_channel_values[2])) - matrix::Eulerf(matrix::Quatf(att->q)).theta();
 
         roll_err_gyro = att_sp->roll_body - att->rollspeed;
         pitch_err_gyro = att_sp->pitch_body - att->pitchspeed;
@@ -42,11 +44,11 @@ void control_right_stick(const struct vehicle_attitude_s *att, const struct vehi
         
         p_err = roll_err_acc;
         d_err = roll_err_gyro;
-        actuators->control[0] = (p_err * pp.roll_p) + (d_err * pp.roll_d) + (pp.roll_bias * rc_channel_values[1]);          // ROLL
+        actuators->control[0] = (p_err * pp.roll_p) + (d_err * pp.roll_d);                  // ROLL
         
         p_err = pitch_err_acc;
         d_err = pitch_err_gyro;
-        actuators->control[1] = (-1 * p_err * pp.pitch_p) + (-1 * d_err * pp.pitch_d) + (pp.pitch_bias * rc_channel_values[2]);          // PITCH
+        actuators->control[1] = (-1 * p_err * pp.pitch_p) + (-1 * d_err * pp.pitch_d);      // PITCH
         last_roll_err = roll_err_acc;
     }
     
@@ -71,13 +73,13 @@ void control_right_stick(const struct vehicle_attitude_s *att, const struct vehi
 
         p_err = (pp.alpha * roll_err_gyro * dt) + ((1.0f - pp.alpha) * roll_err_acc);
         d_err = (p_err - last_roll_err) / dt;
-        actuators->control[0] = (p_err * pp.roll_p) + (d_err * pp.roll_d);// + (pp.roll_bias * rc_channel_values[1]);              // ROLL
+        actuators->control[0] = (p_err * pp.roll_p) + (d_err * pp.roll_d);                  // ROLL
         last_roll_err = p_err;
         
         p_err = (pp.alpha * pitch_err_gyro * dt) + ((1.0f - pp.alpha) * pitch_err_acc);
         d_err = (p_err - last_pitch_err) / dt;
         last_pitch_err = p_err;
-        actuators->control[1] = (-1 * p_err * pp.pitch_p) + (-1 * d_err * pp.pitch_d);// + (pp.pitch_bias * rc_channel_values[2]);              // PITCH
+        actuators->control[1] = (-1 * p_err * pp.pitch_p) + (-1 * d_err * pp.pitch_d);      // PITCH
 
         rp_prev_time = hrt_absolute_time();
     }
@@ -115,7 +117,7 @@ void control_right_stick(const struct vehicle_attitude_s *att, const struct vehi
 void control_yaw(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, const struct vehicle_magnetometer_s *mag, struct actuator_controls_s *actuators, float rc_channel_values[]) {
     if (first_iteration_flag) {
         printf("Resetting YAW Setpoint\n");
-        yaw_euler_sp = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).psi();
+        yaw_euler_sp = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).psi() + (pp.yaw_bias * rc_channel_values[3]);
         // yaw_euler_sp = matrix::Eulerf(matrix::Quatf(att->q)).psi() + (pp.yaw_bias * rc_channel_values[3]);
         mag_sp[0] = mag->magnetometer_ga[0];
         mag_sp[1] = mag->magnetometer_ga[1];
@@ -145,7 +147,7 @@ void control_yaw(const struct vehicle_attitude_s *att, const struct vehicle_atti
         p_err = yaw_err_acc;
         d_err = (yaw_err_acc * pp.time_diff) - yaw_err_gyro;
         // printf("%3.4f\t%3.4f\t%3.4f\t\t", (double)(yaw_err_acc * pp.time_diff), (double)d_err, (double)yaw_err_gyro);
-        actuators->control[2] = (p_err * pp.yaw_p) + (d_err * pp.yaw_d) + (pp.yaw_bias * rc_channel_values[3]);            // YAW
+        actuators->control[2] = (p_err * pp.yaw_p) + (d_err * pp.yaw_d);            // YAW
         
         y_prev_time = hrt_absolute_time();
         last_yaw_err = yaw_err_acc;
@@ -170,9 +172,9 @@ void control_yaw(const struct vehicle_attitude_s *att, const struct vehicle_atti
         tmp_i_err = yaw_i_err + (p_err * dt);
         yaw_i_err =  math::constrain(tmp_i_err, pp.yaw_i_min, pp.yaw_i_max);
 
-        actuators->control[2] = (p_err * pp.yaw_p) + (d_err * pp.yaw_d) + (yaw_i_err * pp.yaw_i);// + (pp.yaw_bias * rc_channel_values[3]);            // YAW
+        actuators->control[2] = (p_err * pp.yaw_p) + (d_err * pp.yaw_d) + (yaw_i_err * pp.yaw_i);           // YAW
         if (verbose)
-            printf("YAW: %3.9f\t%3.9f\t%3.9f\n", (double)tmp_i_err, (double)yaw_i_err, (double)actuators->control[2]);
+            printf("YAW: %3.9f\t%3.9f\t%3.9f\n", (double)tmp_i_err, (double)yaw_i_err, (double)p_err);
         
         y_prev_time = hrt_absolute_time();
         last_yaw_err = yaw_err_acc;

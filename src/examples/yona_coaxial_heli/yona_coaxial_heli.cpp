@@ -22,6 +22,7 @@
  */
 
 #include "yona_controller.cpp"
+#include <mathlib/math/Limits.hpp>
 
 int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
     // Main thread
@@ -214,7 +215,15 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
                 control_yaw(&att, &att_sp, &mag, &actuators, rc_channels.channels);
                 control_thrust(&air_data, &actuators, rc_channels.channels);
 
+                // printf("Actuators: %3.4f\t%3.4f\t%3.4f\t%3.4f\t\t\t", (double)actuators.control[0], (double)actuators.control[1], (double)actuators.control[2], (double)actuators.control[3]);
+
                 // TODO: Throttle limit check.?
+                actuators.control[0] = math::constrain(actuators.control[0], -1.0f, 1.0f) * pp.invert_roll;
+                actuators.control[1] = math::constrain(actuators.control[1], -1.0f, 1.0f) * pp.invert_pitch;
+                actuators.control[2] = math::constrain(actuators.control[2], -1.0f, 1.0f) * pp.invert_yaw;
+                actuators.control[3] = math::constrain(actuators.control[3], 0.0f, 1.0f);
+
+                // printf("Limited: %3.4f\t%3.4f\t%3.4f\t%3.4f\t\n", (double)actuators.control[0], (double)actuators.control[1], (double)actuators.control[2], (double)actuators.control[3]);
 
                 // Reading info on current vehicle status and flight mode
                 orb_copy(ORB_ID(vehicle_status), v_status_sub, &v_status);
