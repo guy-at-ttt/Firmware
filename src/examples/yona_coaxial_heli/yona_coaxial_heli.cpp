@@ -129,7 +129,8 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
     fds[1].fd = att_sub;
     fds[1].events = POLLIN;
 
-    while (!thread_should_exit) {orb_copy(ORB_ID(actuator_armed), arm_sub_fd, &arm);
+    while (!thread_should_exit) {
+        orb_copy(ORB_ID(actuator_armed), arm_sub_fd, &arm);
         // first_iteration_flag = arm.armed ? true : false;
         if (arm.armed && yaw_sp_reset) {
             // warnx("Actuators Armed");
@@ -143,6 +144,7 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
         
         int poll_ret_val = poll(fds, 2, 500);
 
+        // Sanity checks
         if (poll_ret_val < 0) {
             warnx("Poll Error");
         }
