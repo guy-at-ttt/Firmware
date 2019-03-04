@@ -134,6 +134,8 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
         // first_iteration_flag = arm.armed ? true : false;
         if (arm.armed && yaw_sp_reset) {
             // warnx("Actuators Armed");
+            printf("ARMED\n");
+
             first_iteration_flag = true;
             yaw_sp_reset = false;
         }

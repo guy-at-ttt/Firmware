@@ -262,7 +262,7 @@ void parse_arguments(int argc, char *argv[]) {
                     tmp_roll[2] = atof(argv[i+2]);
                     printf("\tChanging Roll Derivative Gain (rd) value to: %2.3f\n", (double)tmp_roll[2]);
                 }
-                else if (!strcmp(argv[i+1], "rb")) {
+                else if (strcmp(argv[i+1], "rb")) {
                     tune_flags[3] = true;
                     tmp_roll[3] = atof(argv[i+2]);
                     printf("\tChanging Roll RC input bias (rb) value to: %2.3f\n", (double)tmp_roll[3]);

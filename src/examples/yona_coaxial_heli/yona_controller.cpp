@@ -117,11 +117,12 @@ void control_right_stick(const struct vehicle_attitude_s *att, const struct vehi
 void control_yaw(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, const struct vehicle_magnetometer_s *mag, struct actuator_controls_s *actuators, float rc_channel_values[]) {
     if (first_iteration_flag) {
         printf("Resetting YAW Setpoint\n");
-        yaw_euler_sp = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).psi() + (pp.yaw_bias * rc_channel_values[3]);
-        // yaw_euler_sp = matrix::Eulerf(matrix::Quatf(att->q)).psi() + (pp.yaw_bias * rc_channel_values[3]);
+        // yaw_euler_sp = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).psi() + (pp.yaw_bias * rc_channel_values[3]);
+        yaw_euler_sp = matrix::Eulerf(matrix::Quatf(att->q)).psi() + (pp.yaw_bias * rc_channel_values[3]);
         mag_sp[0] = mag->magnetometer_ga[0];
         mag_sp[1] = mag->magnetometer_ga[1];
         mag_sp[2] = mag->magnetometer_ga[2];
+        printf("yaw_euler_sp %f\n", (double)yaw_euler_sp);
         first_iteration_flag = false;
     }
     
@@ -157,7 +158,7 @@ void control_yaw(const struct vehicle_attitude_s *att, const struct vehicle_atti
         // PD - accelerometer and gyro - Complementary Filter
         yaw_err_acc = yaw_euler_sp - matrix::Eulerf(matrix::Quatf(att->q)).psi();
         yaw_err_gyro = att_sp->yaw_body - att->yawspeed;
-        yaw_err_mag = 0 - atan2f(-1 * mag->magnetometer_ga[1], mag->magnetometer_ga[0]);
+        // yaw_err_mag = 0 - atan2f(-1 * mag->magnetometer_ga[1], mag->magnetometer_ga[0]);
 
         y_curr_time = hrt_absolute_time();
         dt = (y_curr_time - y_prev_time)/1000000;         // dt in seconds        // TODO: Check
@@ -173,8 +174,17 @@ void control_yaw(const struct vehicle_attitude_s *att, const struct vehicle_atti
         yaw_i_err =  math::constrain(tmp_i_err, pp.yaw_i_min, pp.yaw_i_max);
 
         actuators->control[2] = (p_err * pp.yaw_p) + (d_err * pp.yaw_d) + (yaw_i_err * pp.yaw_i);           // YAW
+
+        ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+        double tmp_yaw = actuators->control[2];
+        if (actuators->control[2] > M_PI)
+            actuators->control[2] = actuators->control[2] - (2 * M_PI);
+        else if (actuators->control[2] < (-1*M_PI))
+            actuators->control[2] = actuators->control[2] + (2 * M_PI);
+        
         if (verbose)
-            printf("YAW: %3.9f\t%3.9f\t%3.9f\n", (double)tmp_i_err, (double)yaw_i_err, (double)p_err);
+            printf("YAW: %3.9f\t%3.9f\t%3.9f\n", (double)tmp_yaw, (double)actuators->control[2], (double)last_yaw_err);
+        ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
         
         y_prev_time = hrt_absolute_time();
         last_yaw_err = yaw_err_acc;
