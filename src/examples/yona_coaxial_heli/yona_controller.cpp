@@ -176,14 +176,15 @@ void control_yaw(const struct vehicle_attitude_s *att, const struct vehicle_atti
         actuators->control[2] = (p_err * pp.yaw_p) + (d_err * pp.yaw_d) + (yaw_i_err * pp.yaw_i);           // YAW
 
         ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-        double tmp_yaw = actuators->control[2];
-        if (actuators->control[2] > M_PI)
-            actuators->control[2] = actuators->control[2] - (2 * M_PI);
-        else if (actuators->control[2] < (-1*M_PI))
-            actuators->control[2] = actuators->control[2] + (2 * M_PI);
+        if (fabs(actuators->control[2]) > 5.0)
+            actuators->control[2] = tmp_yaw;
+
+        tmp_yaw = actuators->control[2];
+        if ((fabs(actuators->control[2]) > 1.93) && (fabs(yaw_euler_sp) > 0))
+            actuators->control[2] = (double)actuators->control[2] - (2 * 1.93 * fabs((double)yaw_euler_sp) / (double)yaw_euler_sp);
         
         if (verbose)
-            printf("YAW: %3.9f\t%3.9f\t%3.9f\n", (double)tmp_yaw, (double)actuators->control[2], (double)last_yaw_err);
+            printf("YAW: %3.9f\tNEW YAW: %3.9f\tabs(YAW): %3.9f\tyaw_euler_sp: %3.9f\n", (double)tmp_yaw, (double)actuators->control[2], fabs((double)tmp_yaw), (double)yaw_euler_sp);
         ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
         
         y_prev_time = hrt_absolute_time();

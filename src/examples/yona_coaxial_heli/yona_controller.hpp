@@ -33,6 +33,7 @@
 
 #include <mathlib/math/Limits.hpp>
 #include <mathlib/math/Functions.hpp>
+#include <math.h>
 
 # define MAX_GYRO_COUNT 3
 # define THRUST_MOVING_AVG_SPAN 10
@@ -65,6 +66,7 @@ float roll_err_gyro = 0.0f, pitch_err_gyro = 0.0f, yaw_err_gyro = 0.0f;
 float yaw_err_mag = 0.0f, yaw_euler_sp = 0.0f, mag_sp[3] = {0.0f, 0.0f, 0.0f};
 float last_roll_err = 0.0f, last_pitch_err = 0.0f, last_yaw_err = 0.0f, last_thrust_err = 0.0f;
 float tmp_i_err = 0.0f, yaw_i_err = 0.0f, thrust_i_err = 0.0f;
+float tmp_yaw = 0.0f;
 
 float thrust_sp_baro = 0.0f, thrust_err_baro = 0.0f, baro_smooth_val = 0.0f;
 int baro_smooth_idx = 0, tmp_thrust_counter = 0;
