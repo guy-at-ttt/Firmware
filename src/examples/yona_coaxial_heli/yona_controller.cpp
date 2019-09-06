@@ -1,18 +1,5 @@
 #include "yona_controller.hpp"
 
-float smoothen_baro(const struct vehicle_air_data_s *air_data) {
-    float sum = 0.0f, avg = 0.0f;
-    if (baro_smooth_idx >= THRUST_MOVING_AVG_SPAN)
-        baro_smooth_idx %= THRUST_MOVING_AVG_SPAN;
-    prev_baro[baro_smooth_idx] = air_data->baro_alt_meter;
-
-    for (int i=0; i < THRUST_MOVING_AVG_SPAN; i++)
-        sum += prev_baro[i];
-    avg = (float)(sum / THRUST_MOVING_AVG_SPAN);
-    baro_smooth_idx++;
-    return avg;
-}
-
 void control_right_stick(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[]) {
     // Control Roll and Pitch
     if (rp_controller_select == 0) {
@@ -56,8 +43,14 @@ void control_right_stick(const struct vehicle_attitude_s *att, const struct vehi
         // PD - accelerometer and gyro - Complementary Filter
         // roll_err_acc = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).phi() - matrix::Eulerf(matrix::Quatf(att->q)).phi();
         // pitch_err_acc = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).theta() - matrix::Eulerf(matrix::Quatf(att->q)).theta();
-        roll_err_acc = (matrix::Eulerf(matrix::Quatf(att_sp->q_d)).phi() + (pp.roll_bias * rc_channel_values[1])) - matrix::Eulerf(matrix::Quatf(att->q)).phi();
-        pitch_err_acc = (matrix::Eulerf(matrix::Quatf(att_sp->q_d)).theta() + (-1 * pp.pitch_bias * rc_channel_values[2])) - matrix::Eulerf(matrix::Quatf(att->q)).theta();
+
+        // Old
+        // roll_err_acc = (matrix::Eulerf(matrix::Quatf(att_sp->q_d)).phi() + (pp.roll_bias * rc_channel_values[1])) - matrix::Eulerf(matrix::Quatf(att->q)).phi();
+        // pitch_err_acc = (matrix::Eulerf(matrix::Quatf(att_sp->q_d)).theta() + (-1 * pp.pitch_bias * rc_channel_values[2])) - matrix::Eulerf(matrix::Quatf(att->q)).theta();
+
+        // New
+        roll_err_acc = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).phi() - matrix::Eulerf(matrix::Quatf(att->q)).phi();
+        pitch_err_acc = matrix::Eulerf(matrix::Quatf(att_sp->q_d)).theta() - matrix::Eulerf(matrix::Quatf(att->q)).theta();
 
         roll_err_gyro = att_sp->roll_body - att->rollspeed;
         pitch_err_gyro = att_sp->pitch_body - att->pitchspeed;
@@ -73,13 +66,15 @@ void control_right_stick(const struct vehicle_attitude_s *att, const struct vehi
 
         p_err = (pp.alpha * roll_err_gyro * dt) + ((1.0f - pp.alpha) * roll_err_acc);
         d_err = (p_err - last_roll_err) / dt;
-        actuators->control[0] = (p_err * pp.roll_p) + (d_err * pp.roll_d);                  // ROLL
+        // actuators->control[0] = (p_err * pp.roll_p) + (d_err * pp.roll_d)                   // ROLL
+        actuators->control[0] = (p_err * pp.roll_p) + (d_err * pp.roll_d) + (pp.roll_bias * rc_channel_values[1]);                  // ROLL
         last_roll_err = p_err;
         
         p_err = (pp.alpha * pitch_err_gyro * dt) + ((1.0f - pp.alpha) * pitch_err_acc);
         d_err = (p_err - last_pitch_err) / dt;
         last_pitch_err = p_err;
-        actuators->control[1] = (-1 * p_err * pp.pitch_p) + (-1 * d_err * pp.pitch_d);      // PITCH
+        // actuators->control[1] = (-1 * p_err * pp.pitch_p) + (-1 * d_err * pp.pitch_d);      // PITCH
+        actuators->control[1] = (-1 * p_err * pp.pitch_p) + (-1 * d_err * pp.pitch_d) + (pp.pitch_bias * rc_channel_values[2]);      // PITCH
 
         rp_prev_time = hrt_absolute_time();
     }
@@ -183,8 +178,8 @@ void control_yaw(const struct vehicle_attitude_s *att, const struct vehicle_atti
         if ((fabs(actuators->control[2]) > 1.93) && (fabs(yaw_euler_sp) > 0))
             actuators->control[2] = (double)actuators->control[2] - (2 * 1.93 * fabs((double)yaw_euler_sp) / (double)yaw_euler_sp);
         
-        if (verbose)
-            printf("YAW: %3.9f\tNEW YAW: %3.9f\tabs(YAW): %3.9f\tyaw_euler_sp: %3.9f\n", (double)tmp_yaw, (double)actuators->control[2], fabs((double)tmp_yaw), (double)yaw_euler_sp);
+        // if (verbose)
+        //     printf("YAW: %3.9f\tNEW YAW: %3.9f\tabs(YAW): %3.9f\tyaw_euler_sp: %3.9f\n", (double)tmp_yaw, (double)actuators->control[2], fabs((double)tmp_yaw), (double)yaw_euler_sp);
         ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
         
         y_prev_time = hrt_absolute_time();
@@ -216,9 +211,25 @@ void control_yaw(const struct vehicle_attitude_s *att, const struct vehicle_atti
     }
 }
 
-void control_thrust(const struct vehicle_air_data_s *air_data, struct actuator_controls_s *actuators, float rc_channel_values[]) {
+float smoothen_baro(const struct vehicle_air_data_s *air_data) {
+    float sum = 0.0f, avg = 0.0f;
+    if (baro_smooth_idx >= THRUST_MOVING_AVG_SPAN)
+        baro_smooth_idx %= THRUST_MOVING_AVG_SPAN;
+    prev_baro[baro_smooth_idx] = air_data->baro_alt_meter;
+
+    for (int i=0; i < THRUST_MOVING_AVG_SPAN; i++)
+        sum += prev_baro[i];
+    avg = (float)(sum / THRUST_MOVING_AVG_SPAN);
+    baro_smooth_idx++;
+    return avg;
+}
+
+void control_thrust(const struct vehicle_local_position_s *local_pos, const struct vehicle_air_data_s *air_data, struct actuator_controls_s *actuators, float rc_channel_values[]) {
     // THRUST
     // printf("%d\n", (int)rc_channel_values[7]);
+    if (verbose) {
+        printf("\nlocal_pos : %4.9f\n", (double)local_pos->z);
+    }
     if (rc_input_val_reset)
        rc_input_val = rc_channel_values[0];
     baro_smooth_val = smoothen_baro(air_data);
@@ -243,7 +254,8 @@ void control_thrust(const struct vehicle_air_data_s *air_data, struct actuator_c
         else {
             // Altitude hold
             rc_input_val_reset = false;
-            thrust_err_baro = (thrust_sp_baro + (pp.thrust_bias * (rc_channel_values[0] - 0.5f))) - baro_smooth_val;
+            // thrust_err_baro = (thrust_sp_baro + (pp.thrust_bias * (rc_channel_values[0] - 0.5f))) - baro_smooth_val;
+            thrust_err_baro = thrust_sp_baro - baro_smooth_val;
 
             th_curr_time = hrt_absolute_time();
             dt = (th_curr_time - th_prev_time)/10e6;
@@ -257,9 +269,10 @@ void control_thrust(const struct vehicle_air_data_s *air_data, struct actuator_c
             tmp_i_err = thrust_i_err + (p_err * dt);
             thrust_i_err = math::constrain(tmp_i_err, pp.thr_i_min, pp.thr_i_max);
             
-            actuators->control[3] = rc_input_val + (p_err * pp.thrust_p) + (d_err * pp.thrust_d) + (thrust_i_err * pp.thrust_i);// + (pp.thrust_bias * (rc_channel_values[0] - 0.5f));            // THRUST
-            if (verbose)
-                printf("\t\t\t\t\t\t\tTHR: %3.9f\t%3.9f\t%3.9f\n", (double)tmp_i_err, (double)thrust_i_err, (double)actuators->control[3]);
+            // actuators->control[3] = rc_input_val + (p_err * pp.thrust_p) + (d_err * pp.thrust_d) + (thrust_i_err * pp.thrust_i);// + (pp.thrust_bias * (rc_channel_values[0] - 0.5f));            // THRUST
+            actuators->control[3] = rc_input_val + (p_err * pp.thrust_p) + (d_err * pp.thrust_d) + (thrust_i_err * pp.thrust_i) + (pp.thrust_bias * (rc_channel_values[0] - 0.5f));            // THRUST
+            // if (verbose)
+            //     printf("\t\t\t\t\t\t\tTHR: %3.9f\t%3.9f\t%3.9f\n", (double)tmp_i_err, (double)thrust_i_err, (double)actuators->control[3]);
 
             th_prev_time = hrt_absolute_time();
             last_thrust_err = thrust_err_baro;

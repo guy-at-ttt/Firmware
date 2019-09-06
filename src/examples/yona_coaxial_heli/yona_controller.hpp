@@ -30,6 +30,7 @@
 #include <uORB/topics/sensor_bias.h>
 #include <uORB/topics/vehicle_magnetometer.h>
 #include <uORB/topics/vehicle_air_data.h>
+#include <uORB/topics/vehicle_local_position.h>
 
 #include <mathlib/math/Limits.hpp>
 #include <mathlib/math/Functions.hpp>
@@ -40,7 +41,8 @@
 
 void control_right_stick(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, struct actuator_controls_s *actuators, float rc_channel_values[]);
 void control_yaw(const struct vehicle_attitude_s *att, const struct vehicle_attitude_setpoint_s *att_sp, const struct vehicle_magnetometer_s *mag, struct actuator_controls_s *actuators, float rc_channel_values[]);
-void control_thrust(const struct vehicle_air_data_s *air_data, struct actuator_controls_s *actuators, float rc_channel_values[]);
+// void control_thrust(const struct vehicle_air_data_s *air_data, struct actuator_controls_s *actuators, float rc_channel_values[]);
+void control_thrust(const struct vehicle_local_position_s *local_pos, const struct vehicle_air_data_s *air_data, struct actuator_controls_s *actuators, float rc_channel_values[]);
 float smoothen_baro(const struct vehicle_air_data_s *air_data);
 int yona_coaxial_heli_main_thread(int argc, char *argv[]);
 

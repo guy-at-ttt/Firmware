@@ -41,6 +41,7 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
 	struct sensor_bias_s			    gyro_bias;          // sensor in-run bias corrections
     struct vehicle_magnetometer_s       mag;
     struct vehicle_air_data_s           air_data;
+    struct vehicle_local_position_s     local_pos;
 
     
     memset(&att, 0, sizeof(att));
@@ -55,6 +56,7 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
     memset(&gyro_correction, 0, sizeof(gyro_correction));
     memset(&mag, 0, sizeof(mag));
     memset(&air_data, 0, sizeof(air_data));
+    memset(&local_pos, 0, sizeof(local_pos));
 
     /* ------ Arming ------ */
     // TODO: Change to a button trigger
@@ -104,6 +106,7 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
     int arm_sub_fd = orb_subscribe(ORB_ID(actuator_armed));
     int mag_sub = orb_subscribe(ORB_ID(vehicle_magnetometer));
     int air_data_sub = orb_subscribe(ORB_ID(vehicle_air_data));
+    int local_pos_sub = orb_subscribe(ORB_ID(vehicle_local_position));
 
 	gyro_count = math::min(orb_group_count(ORB_ID(sensor_gyro)), MAX_GYRO_COUNT);
 	if (gyro_count == 0)
@@ -179,6 +182,7 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
                 orb_copy(ORB_ID(vehicle_attitude), att_sub, &att);
                 orb_copy(ORB_ID(vehicle_magnetometer), mag_sub, &mag);
                 orb_copy(ORB_ID(vehicle_air_data), air_data_sub, &air_data);
+                orb_copy(ORB_ID(vehicle_local_position), local_pos_sub, &local_pos);
                 if (att_sp_updated)
                     orb_copy(ORB_ID(vehicle_attitude_setpoint), att_sp_sub, &att_sp);
                 
@@ -217,7 +221,7 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
                 
                 control_right_stick(&att, &att_sp, &actuators, rc_channels.channels);
                 control_yaw(&att, &att_sp, &mag, &actuators, rc_channels.channels);
-                control_thrust(&air_data, &actuators, rc_channels.channels);
+                control_thrust(&local_pos, &air_data, &actuators, rc_channels.channels);
 
                 // printf("Actuators: %3.4f\t%3.4f\t%3.4f\t%3.4f\t\t\t", (double)actuators.control[0], (double)actuators.control[1], (double)actuators.control[2], (double)actuators.control[3]);
 
