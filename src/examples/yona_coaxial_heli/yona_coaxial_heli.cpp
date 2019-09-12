@@ -218,10 +218,14 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
                 // Checking RC inputs
                 orb_copy(ORB_ID(rc_channels), rc_channels_sub, &rc_channels);
                 // printf("Input RC - %f, %f, %f, %f\t\t", (double)rc_channels.channels[1]*1000, (double)rc_channels.channels[2]*1000, (double)rc_channels.channels[3]*1000, (double)rc_channels.channels[0]*1000);
+                if (verbose) {
+                    printf("\nRC : %3.4f, %s", (double)rc_channels.channels[1], (rc_channels.signal_lost)?"true":"false");
+                }
                 
                 control_right_stick(&att, &att_sp, &actuators, rc_channels.channels);
                 control_yaw(&att, &att_sp, &mag, &actuators, rc_channels.channels);
-                control_thrust(&local_pos, &air_data, &actuators, rc_channels.channels);
+                // control_thrust(&local_pos, &air_data, &actuators, rc_channels.channels);
+                control_thrust(&air_data, &actuators, rc_channels.channels);
 
                 // printf("Actuators: %3.4f\t%3.4f\t%3.4f\t%3.4f\t\t\t", (double)actuators.control[0], (double)actuators.control[1], (double)actuators.control[2], (double)actuators.control[3]);
 
@@ -255,6 +259,17 @@ int yona_coaxial_heli_main_thread(int argc, char *argv[]) {
     }
     orb_publish(ORB_ID_VEHICLE_ATTITUDE_CONTROLS, actuator_pub, &actuators);
     
+    orb_unsubscribe(att_sub);
+    orb_unsubscribe(att_sp_sub);
+    orb_unsubscribe(manual_sp_sub);
+    orb_unsubscribe(v_status_sub);
+    orb_unsubscribe(param_sub);
+    orb_unsubscribe(rc_channels_sub);
+    orb_unsubscribe(arm_sub_fd);
+    orb_unsubscribe(mag_sub);
+    orb_unsubscribe(air_data_sub);
+    orb_unsubscribe(local_pos_sub);
+
     fflush(stdout);
     return 0;
 }
@@ -282,7 +297,7 @@ int yona_coaxial_heli_main(int argc, char *argv[]) {
         deamon_task = px4_task_spawn_cmd("yona_coaxial_heli",
                                         SCHED_DEFAULT,
                                         SCHED_PRIORITY_MAX - 20,
-                                        2048,
+                                        4096,
                                         yona_coaxial_heli_main_thread,
                                         (argv) ? (char *const *)argv : (char *const *)nullptr);
         thread_running = true;

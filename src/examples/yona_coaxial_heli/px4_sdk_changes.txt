@@ -1,0 +1,27 @@
+PreflightCheck.cpp
+    1.
+        From :
+            L 531: success = false;
+		    L 532: goto out;
+
+        To:
+            L 531: // success = false;
+            L 532: // goto out;
+    
+    2.
+        From :
+            L 579: success = false;
+		    L 580: goto out;
+
+        To:
+            L 579: // success = false;
+            L 580: // goto out;
+
+    3.
+        From :
+            L 593: success = false;
+		    L 594: goto out;
+
+        To:
+            L 593: // success = false;
+            L 594: // goto out;

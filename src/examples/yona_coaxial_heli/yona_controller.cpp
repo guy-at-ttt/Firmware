@@ -224,12 +224,10 @@ float smoothen_baro(const struct vehicle_air_data_s *air_data) {
     return avg;
 }
 
-void control_thrust(const struct vehicle_local_position_s *local_pos, const struct vehicle_air_data_s *air_data, struct actuator_controls_s *actuators, float rc_channel_values[]) {
+void control_thrust(const struct vehicle_air_data_s *air_data, struct actuator_controls_s *actuators, float rc_channel_values[]) {
     // THRUST
     // printf("%d\n", (int)rc_channel_values[7]);
-    if (verbose) {
-        printf("\nlocal_pos : %4.9f\n", (double)local_pos->z);
-    }
+    
     if (rc_input_val_reset)
        rc_input_val = rc_channel_values[0];
     baro_smooth_val = smoothen_baro(air_data);
@@ -271,8 +269,8 @@ void control_thrust(const struct vehicle_local_position_s *local_pos, const stru
             
             // actuators->control[3] = rc_input_val + (p_err * pp.thrust_p) + (d_err * pp.thrust_d) + (thrust_i_err * pp.thrust_i);// + (pp.thrust_bias * (rc_channel_values[0] - 0.5f));            // THRUST
             actuators->control[3] = rc_input_val + (p_err * pp.thrust_p) + (d_err * pp.thrust_d) + (thrust_i_err * pp.thrust_i) + (pp.thrust_bias * (rc_channel_values[0] - 0.5f));            // THRUST
-            // if (verbose)
-            //     printf("\t\t\t\t\t\t\tTHR: %3.9f\t%3.9f\t%3.9f\n", (double)tmp_i_err, (double)thrust_i_err, (double)actuators->control[3]);
+            if (verbose)
+                printf("\t\t\t\t\t\t\tTHR: %3.9f\t%3.9f\t%3.9f\n", (double)tmp_i_err, (double)thrust_i_err, (double)actuators->control[3]);
 
             th_prev_time = hrt_absolute_time();
             last_thrust_err = thrust_err_baro;
@@ -280,3 +278,55 @@ void control_thrust(const struct vehicle_local_position_s *local_pos, const stru
     }
     actuators->timestamp = hrt_absolute_time();
 }
+
+// int tmp_count = 0;
+// void control_thrust(const struct vehicle_local_position_s *local_pos, const struct vehicle_air_data_s *air_data, struct actuator_controls_s *actuators, float rc_channel_values[]) {
+//     // THRUST
+//     // printf("%d\n", (int)rc_channel_values[7]);
+
+//     // tmp_count++;
+//     // if ((verbose) && (tmp_count % 10 == 0)) {
+//     //     PX4_INFO("local_pos : %4.9f", (double)local_pos->z);
+//     // }
+    
+//     if ((int)rc_channel_values[7] < 0) {
+//         thrust_sp_reset = false;
+//         actuators->control[3] = rc_channel_values[0];       // Manual Control
+//     }
+//     else if ((int)rc_channel_values[7] == 0) {
+//         // Get the set point for thrust control
+//         thrust_sp_reset = true;
+//         thrust_sp = local_pos->z;                           // Set Point of local_z
+//         actuators->control[3] = rc_channel_values[0];
+//     }
+//     else {
+//         // Altitude hold
+//         if (thrust_sp_reset == false) {
+//             thrust_sp_reset = true;
+//             thrust_sp = local_pos->z;                           // Set Point of local_z
+//             actuators->control[3] = rc_channel_values[0];
+//         }
+//         else {
+//             th_curr_time = hrt_absolute_time();
+//             dt = (th_curr_time - th_prev_time)/10e6;
+//             if (dt < 0.002f)
+//                 dt = 0.002f;
+//             if (dt > 0.02f)
+//                 dt = 0.02f;
+
+//             p_err = thrust_sp - local_pos->z;
+//             d_err = (p_err - last_thrust_err) / dt;
+//             tmp_i_err = thrust_i_err + (p_err * dt);
+//             thrust_i_err = math::constrain(tmp_i_err, pp.thr_i_min, pp.thr_i_max);
+            
+//             actuators->control[3] = (p_err * pp.thrust_p) + (d_err * pp.thrust_d) + (thrust_i_err * pp.thrust_i);
+
+//             th_prev_time = hrt_absolute_time();
+//             last_thrust_err = p_err;
+//         }
+//     }
+//     // if (verbose) {
+//     //     PX4_INFO("Thrust control : %3.9f\t%3.9f\t%5.9f", (double)local_pos->z, (double)thrust_sp, (double)actuators->control[3]);
+//     // }
+//     actuators->timestamp = hrt_absolute_time();
+// }
