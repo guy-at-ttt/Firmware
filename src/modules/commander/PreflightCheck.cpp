@@ -528,8 +528,8 @@ static bool ekf2Check(orb_advert_t *mavlink_log_pub, vehicle_status_s &vehicle_s
 			mavlink_log_critical(mavlink_log_pub, "PREFLIGHT FAIL: EKF INTERNAL CHECKS");
 		}
 
-		success = false;
-		goto out;
+		// success = false;
+		// goto out;
 	}
 
 	// check vertical position innovation test ratio
@@ -576,8 +576,8 @@ static bool ekf2Check(orb_advert_t *mavlink_log_pub, vehicle_status_s &vehicle_s
 			mavlink_log_critical(mavlink_log_pub, "PREFLIGHT FAIL: EKF YAW ERROR");
 		}
 
-		success = false;
-		goto out;
+		// success = false;
+		// goto out;
 	}
 
 	// check accelerometer delta velocity bias estimates
@@ -589,8 +589,8 @@ static bool ekf2Check(orb_advert_t *mavlink_log_pub, vehicle_status_s &vehicle_s
 			mavlink_log_critical(mavlink_log_pub, "PREFLIGHT FAIL: EKF HIGH IMU ACCEL BIAS");
 		}
 
-		success = false;
-		goto out;
+		// success = false;
+		// goto out;
 	}
 
 	// check gyro delta angle bias estimates
